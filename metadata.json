@@ -1,0 +1,7 @@
+{
+  "name": "CineSphere Browser",
+  "description": "Next-generation cinema and series browser with secure server-side signing, streaming source discovery, and metadata exploration.",
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

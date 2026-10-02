@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CineSphere Browser</title>
+  <meta name="description" content="Next-generation cinema and series browser with secure server-side signing, streaming source discovery, and metadata exploration.">
+  <meta property="og:title" content="CineSphere Browser">
+  <meta property="og:description" content="Next-generation cinema and series browser with secure server-side signing, streaming source discovery, and metadata exploration.">
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,600;9..144,800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <!-- Local compiled Tailwind bundle + custom styles -->
+  <link rel="stylesheet" href="/tailwind.css">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="antialiased selection:bg-amber-500/30 selection:text-white">
+
+  <!-- Navigation Bar -->
+  <header class="sticky top-0 z-30 glass-header">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
+      
+      <!-- CineSphere Custom Logo & Title -->
+      <div id="brandHomeBtn" class="flex items-center gap-3 cursor-pointer">
+        <div class="relative w-10 h-10 rounded-xl bg-gradient-to-tr from-amber-600 via-orange-600 to-red-700 p-[1.5px] shadow-lg shadow-amber-950/50">
+          <div class="w-full h-full bg-[#0c0b0a] rounded-[10px] flex items-center justify-center">
+            <!-- Custom CineSphere Geometric Logo -->
+            <svg class="w-5 h-5 text-amber-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+              <polyline points="2 17 12 22 22 17"></polyline>
+              <polyline points="2 12 12 17 22 12"></polyline>
+            </svg>
+          </div>
+        </div>
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="text-lg font-extrabold tracking-tight bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent">CineSphere</span>
+            <span class="text-[10px] font-mono tracking-widest uppercase px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 font-semibold">50+ Providers</span>
+          </div>
+          <p class="text-[11px] text-slate-400 hidden sm:block">MovieBox • Stremio • 52 Vega Providers (FlixHQ, ShowBox, GokuHD, HiAnime, VMovies...)</p>
+        </div>
+      </div>
+
+      <!-- Navigation Actions: Home, Search, Providers -->
+      <nav class="flex items-center gap-1.5 sm:gap-2">
+        <!-- Home Button -->
+        <button id="navHomeBtn" title="Back to Home / Catalog" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-slate-300 hover:text-white hover:bg-[#1f1b17] text-xs font-semibold border border-transparent hover:border-[#2f2924] transition cursor-pointer">
+          <svg class="w-4 h-4 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
+          </svg>
+          <span>Home</span>
+        </button>
+
+        <!-- Search Button -->
+        <button id="navSearchBtn" title="Jump to Search" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-slate-300 hover:text-white hover:bg-[#1f1b17] text-xs font-semibold border border-transparent hover:border-[#2f2924] transition cursor-pointer">
+          <svg class="w-4 h-4 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+          </svg>
+          <span>Search</span>
+        </button>
+
+        <!-- Providers Button -->
+        <button id="navProvidersBtn" title="Browse and select providers" class="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#161412] hover:bg-[#211d19] text-slate-100 hover:text-white text-xs font-semibold border border-[#2f2924] hover:border-amber-500/50 transition shadow-sm cursor-pointer">
+          <svg class="w-4 h-4 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/>
+          </svg>
+          <span>Providers</span>
+        </button>
+
+        <!-- Watchlist & History Button -->
+        <button id="navLibraryBtn" title="View Watchlist & Watch History" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-slate-300 hover:text-white hover:bg-[#1f1b17] text-xs font-semibold border border-transparent hover:border-[#2f2924] transition cursor-pointer">
+          <svg class="w-4 h-4 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+          </svg>
+          <span>Watchlist</span>
+          <span id="navWatchlistBadge" class="hidden text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold">0</span>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <!-- Main Content Wrapper -->
+  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+    
+    <!-- Hero / Search Section -->
+    <section id="heroSearchSection" class="hero-panel glass-panel rounded-3xl p-6 sm:p-14 shadow-2xl relative overflow-hidden hidden">
+      <!-- Glow ambient background -->
+      <div class="absolute -top-24 -left-24 w-72 h-72 bg-amber-500/10 rounded-full blur-3xl pointer-events-none"></div>
+      <div class="absolute -bottom-24 -right-24 w-72 h-72 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none"></div>
+
+      <div class="relative max-w-3xl mx-auto text-center space-y-5">
+        <p class="text-[11px] font-mono uppercase tracking-[0.3em] text-amber-400/80">Now showing · every screen</p>
+        <h1 class="font-display text-4xl sm:text-6xl font-extrabold text-white tracking-tight leading-[1.05]">
+          Find it. <span class="italic text-amber-400">Press play.</span>
+        </h1>
+        <p class="text-sm sm:text-base text-slate-300 max-w-xl mx-auto font-normal">
+          Search movies and series seamlessly across MovieBox, 4KHDHub scraper, Stremio addons, CircleFTP, and DhakaFlix BDIX with automatic fallbacks.
+        </p>
+
+        <!-- Search Form -->
+        <form id="searchForm" class="relative max-w-2xl mx-auto flex items-center gap-2">
+          <div class="relative flex-1">
+            <div class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-400">
+              <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+            </div>
+            <input
+              type="text"
+              id="searchInput"
+              value=""
+              placeholder="Search any title (e.g. Inception, Dune, Spider-Man, Interstellar...)"
+              class="w-full pl-11 pr-14 py-4 text-base bg-[#0c0b0a]/90 text-white border border-[#2f2924] focus:border-amber-500 focus:ring-1 focus:ring-amber-500 rounded-xl outline-none text-sm transition placeholder-slate-500 shadow-inner"
+              required
+              autofocus
+              autocomplete="off"
+            >
+            <kbd class="hidden sm:flex absolute inset-y-0 right-3 my-auto h-6 items-center px-2 rounded-md border border-[#2f2924] bg-[#161412] text-[11px] font-mono text-slate-400">/</kbd>
+          </div>
+          <button
+            type="submit"
+            id="searchBtn"
+            class="px-6 py-3.5 bg-amber-600 hover:bg-amber-500 text-white text-sm font-bold rounded-xl shadow-lg shadow-amber-950/40 transition flex items-center gap-2 disabled:opacity-50"
+          >
+            <span id="searchBtnText">Search</span>
+            <svg id="searchSpinner" class="w-4 h-4 animate-spin hidden" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+            </svg>
+          </button>
+        </form>
+
+        <!-- Quick Suggestions -->
+        <div class="flex flex-wrap items-center justify-center gap-2 pt-2">
+          <span class="text-xs text-slate-500 font-medium">Suggestions:</span>
+          <button class="quick-chip" data-query="Inception">Inception</button>
+          <button class="quick-chip" data-query="Dune">Dune</button>
+          <button class="quick-chip" data-query="Spider-Man">Spider-Man</button>
+          <button class="quick-chip" data-query="Interstellar">Interstellar</button>
+          <button class="quick-chip" data-query="Naruto">Naruto</button>
+          <button class="quick-chip" data-query="Demon Slayer">Demon Slayer</button>
+          <button class="quick-chip" data-query="Breaking Bad">Breaking Bad</button>
+          <button class="quick-chip" data-query="Stranger Things">Stranger Things</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Top Streaming Hub Channels Bar (Like a Streaming Site) -->
+    <section class="space-y-3">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+          <h2 class="text-xs uppercase font-mono tracking-widest text-amber-400/90 font-bold">Featured Streaming Hubs</h2>
+        </div>
+        <span class="text-[11px] text-slate-400 font-mono hidden sm:inline">Automatic provider failover on playback & download</span>
+      </div>
+
+      <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5" id="topChannelsBar">
+        <!-- MovieBox Web -->
+        <button class="channel-card active" data-provider="movieBoxWeb" data-genre="movies" data-name="MovieBox Web">
+          <div class="flex items-center gap-2.5">
+            <div class="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0 border border-amber-500/30">
+              <svg class="w-4 h-4 fill-current" viewBox="0 0 20 20"><path d="M4 3a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V5a2 2 0 00-2-2H4zm3 2h2v2H7V5zm4 0h2v2h-2V5zm4 0h2v2h-2V5zM7 9h2v2H7V9zm4 0h2v2h-2V9zm4 0h2v2h-2V9zM7 13h2v2H7v-2zm4 0h2v2h-2v-2zm4 0h2v2h-2v-2z"/></svg>
+            </div>
+            <div class="text-left min-w-0">
+              <div class="text-xs font-bold text-white truncate">MovieBox</div>
+              <div class="text-[10px] text-amber-300/80 font-mono font-medium truncate">Default Movies</div>
+            </div>
+          </div>
+        </button>
+
+        <!-- HiAnime -->
+        <button class="channel-card" data-provider="hiAnime" data-genre="anime" data-name="HiAnime">
+          <div class="flex items-center gap-2.5">
+            <div class="w-8 h-8 rounded-lg bg-rose-500/20 text-rose-400 flex items-center justify-center shrink-0 border border-rose-500/30">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+            </div>
+            <div class="text-left min-w-0">
+              <div class="text-xs font-bold text-white truncate">HiAnime</div>
+              <div class="text-[10px] text-rose-300/80 font-mono font-medium truncate">Top Anime Hub</div>
+            </div>
+          </div>
+        </button>
+
+        <!-- GokuHD -->
+        <button class="channel-card" data-provider="gokuHD" data-genre="movies" data-name="GokuHD">
+          <div class="flex items-center gap-2.5">
+            <div class="w-8 h-8 rounded-lg bg-orange-500/20 text-orange-400 flex items-center justify-center shrink-0 border border-orange-500/30">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            </div>
+            <div class="text-left min-w-0">
+              <div class="text-xs font-bold text-white truncate">GokuHD</div>
+              <div class="text-[10px] text-orange-300/80 font-mono font-medium truncate">Fast Global HD</div>
+            </div>
+          </div>
+        </button>
+
+        <!-- 4KHDHub -->
+        <button class="channel-card" data-provider="4khdhub" data-genre="movies" data-name="4KHDHub">
+          <div class="flex items-center gap-2.5">
+            <div class="w-8 h-8 rounded-lg bg-cyan-500/20 text-cyan-400 flex items-center justify-center shrink-0 border border-cyan-500/30">
+              <span class="text-[11px] font-black tracking-tight">4K</span>
+            </div>
+            <div class="text-left min-w-0">
+              <div class="text-xs font-bold text-white truncate">4KHDHub</div>
+              <div class="text-[10px] text-cyan-300/80 font-mono font-medium truncate">Ultra HD & Remux</div>
+            </div>
+          </div>
+        </button>
+
+        <!-- Asian Drama -->
+        <button class="channel-card" data-provider="all" data-genre="drama" data-name="Asian Drama">
+          <div class="flex items-center gap-2.5">
+            <div class="w-8 h-8 rounded-lg bg-purple-500/20 text-purple-400 flex items-center justify-center shrink-0 border border-purple-500/30">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z"/></svg>
+            </div>
+            <div class="text-left min-w-0">
+              <div class="text-xs font-bold text-white truncate">Asian Drama</div>
+              <div class="text-[10px] text-purple-300/80 font-mono font-medium truncate">K-Drama / C-Drama</div>
+            </div>
+          </div>
+        </button>
+
+        <!-- All Providers -->
+        <button class="channel-card" data-provider="all" data-genre="" data-name="All Providers">
+          <div class="flex items-center gap-2.5">
+            <div class="w-8 h-8 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0 border border-emerald-500/30">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            </div>
+            <div class="text-left min-w-0">
+              <div class="text-xs font-bold text-white truncate">All Providers</div>
+              <div class="text-[10px] text-emerald-300/80 font-mono font-medium truncate">Unified Discovery</div>
+            </div>
+          </div>
+        </button>
+      </div>
+    </section>
+
+    <!-- Error Banner -->
+    <div id="errorBanner" class="hidden p-4 rounded-xl bg-red-950/60 border border-red-800 text-red-200 text-sm flex items-start gap-3 shadow-lg">
+      <svg class="w-5 h-5 text-red-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+      <div class="flex-1">
+        <div class="font-bold text-red-300">Request Error</div>
+        <p class="text-xs text-red-300/80 mt-1" id="errorMessage"></p>
+      </div>
+      <button onclick="document.getElementById('errorBanner').classList.add('hidden')" class="text-red-400 hover:text-red-200 text-xs font-mono">Dismiss</button>
+    </div>
+
+    <!-- Results Section -->
+    <section id="resultsContainer" class="space-y-4">
+      <!-- Section Controls -->
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-3 border-b border-[#2f2924]">
+        <div class="flex items-center gap-3">
+          <h2 class="text-xl font-bold text-white tracking-tight" id="resultsTitle">Catalog Results</h2>
+          <span id="resultsCount" class="text-xs font-mono px-2.5 py-0.5 rounded-full bg-[#211d19] text-slate-300 border border-[#2f2924]">
+            Ready to search
+          </span>
+        </div>
+
+        <!-- Filter Controls: Provider Selection + Category Tabs -->
+        <div class="flex flex-wrap items-center gap-2.5">
+          <!-- Type filter tabs: All / Movies / Series -->
+          <div class="flex items-center gap-1 p-1 bg-[#161412] rounded-xl border border-[#2f2924] text-xs">
+            <button id="filterAllBtn" class="quick-chip active !m-0 !py-1 !px-3">All Types</button>
+            <button id="filterMoviesBtn" class="quick-chip !m-0 !py-1 !px-3">Movies</button>
+            <button id="filterSeriesBtn" class="quick-chip !m-0 !py-1 !px-3">Series</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Results Grid Container -->
+      <div id="resultsGrid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 sm:gap-6">
+        <!-- Media Cards injected by app.js -->
+      </div>
+
+      <!-- Loading State Indicator -->
+      <div id="loadingState" class="hidden">
+        <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 sm:gap-6">
+          <div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div>
+        </div>
+        <p class="text-xs text-slate-500 font-mono text-center pt-4">Querying providers with automatic failover…</p>
+      </div>
+
+      <!-- Initial Welcome State -->
+      <div id="welcomeState" class="py-16 text-center space-y-4 bg-[#161412]/40 rounded-2xl border border-dashed border-[#2f2924]">
+        <div class="w-14 h-14 mx-auto rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
+          <svg class="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+        </div>
+        <div class="space-y-1">
+          <h3 class="text-base font-bold text-slate-200">Start Searching</h3>
+          <p class="text-xs text-slate-400 max-w-md mx-auto">
+            Type any movie or TV series title above, or click one of the suggestions to search across all configured providers.
+          </p>
+        </div>
+      </div>
+
+      <!-- Empty State -->
+      <div id="emptyState" class="hidden py-16 text-center space-y-3 bg-[#161412]/40 rounded-2xl border border-dashed border-[#2f2924]">
+        <svg class="w-12 h-12 mx-auto text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z" />
+        </svg>
+        <h3 class="text-sm font-bold text-slate-300">No media titles found</h3>
+        <p class="text-xs text-slate-500 max-w-sm mx-auto">Try checking for typos, selecting "All Providers", or searching another title.</p>
+      </div>
+    </section>
+  </main>
+
+  <!-- Media Details & Playback Modal -->
+  <div id="detailsModal" role="dialog" aria-modal="true" aria-labelledby="modalTitle" class="fixed inset-0 z-50 modal-overlay hidden items-center justify-center p-3 sm:p-6 overflow-y-auto">
+    <div class="bg-[#161412] border border-[#2f2924] rounded-2xl max-w-3xl w-full max-h-[92vh] flex flex-col shadow-2xl overflow-hidden animate-fade-in my-auto">
+      
+      <!-- Modal Header -->
+      <div class="px-5 py-4 border-b border-[#2f2924] flex items-center justify-between bg-[#0c0b0a]/70">
+        <div class="flex items-center gap-2 truncate pr-4">
+          <span id="modalProviderBadge" class="text-[10px] font-mono uppercase font-bold px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">MovieBox</span>
+          <span id="modalTypeBadge" class="text-[10px] font-mono uppercase font-bold px-2 py-0.5 rounded badge-movie">Movie</span>
+          <h2 id="modalTitle" class="text-base sm:text-lg font-bold text-white truncate">Title</h2>
+        </div>
+        <button id="closeDetailsBtn" aria-label="Close" class="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-[#211d19] transition">
+          <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+
+      <!-- Modal Body -->
+      <div class="p-5 sm:p-6 overflow-y-auto space-y-6 flex-1">
+        <!-- Media Overview Header -->
+        <div class="flex flex-col sm:flex-row gap-5">
+          <!-- Poster -->
+          <div class="w-32 sm:w-44 shrink-0 mx-auto sm:mx-0">
+            <div class="aspect-[2/3] rounded-xl overflow-hidden bg-[#070606] border border-[#2f2924] shadow-lg">
+              <img id="modalPoster" alt="Poster" loading="lazy" class="w-full h-full object-cover">
+            </div>
+          </div>
+
+          <!-- Metadata -->
+          <div class="flex-1 space-y-3 text-left">
+            <div class="flex flex-wrap items-center gap-2 text-xs">
+              <span id="modalYear" class="px-2.5 py-0.5 rounded bg-[#211d19] text-slate-300 font-mono font-medium"></span>
+              <span id="modalDuration" class="px-2.5 py-0.5 rounded bg-[#211d19] text-slate-300"></span>
+              <div id="modalRatingBadge" class="flex items-center gap-1 px-2.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 font-semibold">
+                <svg class="w-3.5 h-3.5 fill-amber-400" viewBox="0 0 20 20">
+                  <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/>
+                </svg>
+                <span id="modalRating">IMDb -</span>
+              </div>
+              <span class="text-slate-500 font-mono text-[11px]" id="modalSubjectId"></span>
+            </div>
+
+            <!-- Genres -->
+            <div id="modalGenres" class="flex flex-wrap gap-1.5"></div>
+
+            <!-- Overview -->
+            <div>
+              <h4 class="text-xs uppercase font-mono tracking-wider text-slate-400 mb-1 font-semibold">Overview</h4>
+              <p id="modalDescription" class="text-sm text-slate-300 leading-relaxed max-h-36 overflow-y-auto pr-1"></p>
+            </div>
+
+            <!-- Actions Bar -->
+            <div class="pt-2 flex flex-wrap items-center gap-2.5">
+              <button
+                id="viewSourcesBtn"
+                class="px-4 py-2 rounded-xl bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-amber-950/40 transition cursor-pointer"
+              >
+                <svg class="w-4 h-4 fill-current" viewBox="0 0 20 20">
+                  <path d="M6.3 2.841A1.5 1.5 0 004 4.11V15.89a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z"/>
+                </svg>
+                <span>View Available Streaming Sources</span>
+              </button>
+
+              <button
+                id="modalWatchlistBtn"
+                class="px-3.5 py-2 rounded-xl bg-[#211d19] hover:bg-[#2c2621] text-slate-200 hover:text-white font-semibold text-xs flex items-center gap-1.5 border border-[#2f2924] transition cursor-pointer"
+              >
+                <svg id="modalWatchlistIcon" class="w-4 h-4 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+                </svg>
+                <span id="modalWatchlistText">Add to Watchlist</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Series Hierarchy Section -->
+        <div id="seriesHierarchySection" class="hidden border-t border-[#2f2924] pt-5 space-y-3">
+          <div class="flex items-center justify-between gap-3 flex-wrap">
+            <h4 class="text-xs uppercase font-mono tracking-wider text-indigo-400 font-bold flex items-center gap-1.5">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+              </svg>
+              <span>Series Hierarchy • Seasons & Episodes</span>
+            </h4>
+            <div class="flex items-center gap-3">
+              <!-- Season Filter (Beside Audio) -->
+              <div class="flex items-center gap-1.5">
+                <label for="seriesSeasonSelect" class="text-[10px] uppercase tracking-wide text-slate-400 font-mono">Season</label>
+                <select id="seriesSeasonSelect" class="bg-[#0c0b0a] text-slate-200 border border-[#2f2924] rounded-lg px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer">
+                  <option value="all">All Seasons</option>
+                </select>
+              </div>
+
+              <!-- Audio Filter -->
+              <div class="flex items-center gap-1.5">
+                <label for="seriesAudioSelect" class="text-[10px] uppercase tracking-wide text-slate-400 font-mono">Audio</label>
+                <select id="seriesAudioSelect" class="bg-[#0c0b0a] text-slate-200 border border-[#2f2924] rounded-lg px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer">
+                  <option value="all" selected>All (English, Hindi, Original)</option>
+                  <option value="english">English</option>
+                  <option value="hindi">Hindi</option>
+                  <option value="original">Original Audio</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div id="seriesSeasonsList" class="space-y-3"></div>
+        </div>
+
+        <!-- Embedded Video Player Component -->
+        <div id="playerContainer" class="hidden border-t border-[#2f2924] pt-5 space-y-3">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div class="flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+              <h4 class="text-xs font-mono uppercase text-emerald-400 font-bold" id="activeStreamTitle">Stream Player</h4>
+              <span id="playerModeBadge" class="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-950/60 text-emerald-300 border border-emerald-800">Direct Play</span>
+            </div>
+            
+            <div class="flex items-center gap-2">
+              <button id="toggleProxyBtn" class="text-[11px] font-mono px-2.5 py-1 rounded-lg bg-[#211d19] hover:bg-[#2c2621] text-slate-300 border border-[#2f2924] transition flex items-center gap-1">
+                <svg class="w-3 h-3 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                </svg>
+                <span>Switch to Stream Proxy</span>
+              </button>
+
+              <button id="copyStreamBtn" class="text-[11px] font-mono px-2.5 py-1 rounded-lg bg-[#211d19] hover:bg-amber-600/30 text-amber-300 border border-amber-500/30 transition flex items-center gap-1">
+                <svg class="w-3 h-3 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+                </svg>
+                <span id="copyStreamText">Copy Link (VLC)</span>
+              </button>
+
+              <a id="downloadPlayerStream" href="#" class="text-[11px] font-mono px-2.5 py-1 rounded-lg bg-emerald-950/60 hover:bg-emerald-900 text-emerald-300 border border-emerald-800 transition flex items-center gap-1" title="Download video file to device">
+                <svg class="w-3 h-3 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                </svg>
+                <span>Download</span>
+              </a>
+
+              <a id="openStreamNewTab" href="#" target="_blank" rel="noopener noreferrer" class="text-[11px] font-mono px-2.5 py-1 rounded-lg bg-[#211d19] hover:bg-[#2c2621] text-slate-300 border border-[#2f2924] transition flex items-center gap-1">
+                <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                </svg>
+                <span>External</span>
+              </a>
+
+              <button id="closePlayerBtn" class="text-xs text-slate-400 hover:text-white font-mono px-2 py-1 rounded bg-[#211d19] transition">
+                ✕ Close
+              </button>
+            </div>
+          </div>
+
+          <div class="video-player-container">
+            <video id="videoPlayer" controls playsinline class="w-full max-h-[420px] bg-black rounded-lg outline-none"></video>
+          </div>
+
+          <div class="p-3 bg-[#0c0b0a] rounded-xl border border-[#2f2924] text-xs text-slate-400 flex items-start gap-2.5">
+            <svg class="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <div class="space-y-0.5">
+              <span class="font-semibold text-slate-200">Playback Status:</span>
+              <p class="text-[11px] text-slate-400">Direct MP4 streams play natively in browser. For high-bitrate 1080p HEVC or DASH manifests, you can click "Copy Link (VLC)" and paste directly into VLC, MPV, or IINA player.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Streaming Sources & Releases List -->
+        <div id="streamsSection" class="hidden border-t border-[#2f2924] pt-5 space-y-3">
+          <div class="flex items-center justify-between">
+            <h4 class="text-sm font-bold text-white flex items-center gap-2">
+              <svg class="w-4 h-4 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <span>Playback Sources</span>
+            </h4>
+            <span id="streamsCountBadge" class="text-xs text-slate-400 font-mono">0 sources</span>
+          </div>
+
+          <div id="streamsLoading" class="hidden py-6 text-center text-xs text-slate-400 font-mono animate-pulse">
+            Querying provider playback manifest...
+          </div>
+
+          <div id="streamsList" class="space-y-2.5">
+            <!-- Releases dynamically populated -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Providers Modal -->
+  <div id="providersModal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-sm">
+    <div class="glass-panel w-full max-w-4xl max-h-[88vh] rounded-2xl flex flex-col overflow-hidden border border-[#2f2924] shadow-2xl animate-in fade-in zoom-in-95 duration-150">
+      
+      <!-- Modal Header -->
+      <div class="px-5 py-4 border-b border-[#2f2924] flex items-center justify-between bg-[#161412]/90">
+        <div class="flex items-center gap-3">
+          <div class="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 shrink-0">
+            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+            </svg>
+          </div>
+          <div>
+            <div class="flex items-center gap-2">
+              <h3 class="text-base font-bold text-white tracking-tight">Streaming & Scraper Providers</h3>
+              <span id="providersModalCount" class="text-[10px] font-mono font-semibold text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">50+ Providers</span>
+            </div>
+            <p class="text-[11px] text-slate-400">Select a specific provider or search across all sources with automatic provider switching.</p>
+          </div>
+        </div>
+        <button id="closeProvidersBtn" class="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-[#211d19] transition cursor-pointer">
+          <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+
+      <!-- Search & Category Filter Bar inside Modal -->
+      <div class="p-4 border-b border-[#2f2924] bg-[#0c0b0a] space-y-3">
+        <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+          <div class="relative flex-1">
+            <svg class="w-4 h-4 absolute left-3 inset-y-0 my-auto text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            <input
+              type="text"
+              id="providersSearchInput"
+              placeholder="Search providers (e.g. MovieBox, HiAnime, 4KHDHub, GokuHD, Stremio, Vega...)"
+              class="w-full pl-9 pr-4 py-2 bg-[#161412] text-white border border-[#2f2924] focus:border-amber-500 focus:ring-1 focus:ring-amber-500 rounded-xl outline-none text-xs transition"
+            />
+          </div>
+          <button id="btnUnifiedAll" class="px-3.5 py-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 whitespace-nowrap bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white shadow-sm cursor-pointer">
+            <span>⚡ Unified (All Providers)</span>
+          </button>
+        </div>
+
+        <!-- Category Filters -->
+        <div class="flex flex-wrap items-center gap-1.5 text-xs" id="providerCategoryPills">
+          <button class="quick-chip active !m-0 !py-1 !px-2.5" data-category="all">All</button>
+          <button class="quick-chip !m-0 !py-1 !px-2.5" data-category="Featured Streaming">Featured</button>
+          <button class="quick-chip !m-0 !py-1 !px-2.5" data-category="Vega Anime">Anime</button>
+          <button class="quick-chip !m-0 !py-1 !px-2.5" data-category="Vega English">English & Global</button>
+          <button class="quick-chip !m-0 !py-1 !px-2.5" data-category="Vega Regional (India)">Indian / Regional</button>
+          <button class="quick-chip !m-0 !py-1 !px-2.5" data-category="BDIX & Local">BDIX / Local</button>
+        </div>
+      </div>
+
+      <!-- Providers Cards Grid -->
+      <div id="providersModalList" class="flex-1 overflow-y-auto p-4 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 bg-[#0c0b0a]">
+        <!-- Dynamically injected provider cards -->
+      </div>
+      
+      <!-- Footer Note -->
+      <div class="px-5 py-3 border-t border-[#2f2924] bg-[#161412] flex items-center justify-between text-[11px] text-slate-400">
+        <div class="flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+          <span>Automatic cross-provider failover is active on all playback and downloads</span>
+        </div>
+        <button id="closeProvidersFooterBtn" class="px-3 py-1 rounded-lg bg-[#211d19] hover:bg-[#2b2520] text-slate-200 text-xs font-semibold border border-[#2f2924] transition cursor-pointer">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Watchlist & History Library Modal -->
+  <div id="libraryModal" class="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-3 sm:p-6 hidden">
+    <div class="glass-panel bg-[#12100e] border border-[#2f2924] rounded-2xl max-w-4xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+      
+      <!-- Library Modal Header -->
+      <div class="p-5 border-b border-[#2f2924] flex items-center justify-between bg-[#161412]">
+        <div class="flex items-center gap-3">
+          <div class="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
+            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+            </svg>
+          </div>
+          <div>
+            <h3 class="text-base font-bold text-white tracking-tight">My Library</h3>
+            <p class="text-[11px] text-slate-400">Your saved movies, series, and recently played streams</p>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <button id="clearHistoryBtn" class="hidden px-2.5 py-1.5 rounded-lg bg-red-950/40 hover:bg-red-900/60 text-red-300 border border-red-800/60 text-xs font-semibold transition cursor-pointer">
+            Clear History
+          </button>
+          <button id="closeLibraryBtn" class="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-[#211d19] transition cursor-pointer">
+            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Library Tabs Bar -->
+      <div class="px-5 pt-3 border-b border-[#2f2924] bg-[#0c0b0a] flex items-center gap-3">
+        <button id="tabWatchlistBtn" class="pb-3 px-1 border-b-2 border-amber-400 text-white font-bold text-xs flex items-center gap-2 cursor-pointer transition">
+          <svg class="w-4 h-4 text-amber-400" fill="currentColor" viewBox="0 0 20 20">
+            <path d="M5 4a2 2 0 012-2h6a2 2 0 012 2v14l-5-2.5L5 18V4z" />
+          </svg>
+          <span>Watchlist</span>
+          <span id="libWatchlistBadge" class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">0</span>
+        </button>
+
+        <button id="tabHistoryBtn" class="pb-3 px-1 border-b-2 border-transparent text-slate-400 hover:text-slate-200 font-semibold text-xs flex items-center gap-2 cursor-pointer transition">
+          <svg class="w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <span>Watch History</span>
+          <span id="libHistoryBadge" class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-[#211d19] text-slate-300 border border-[#2f2924]">0</span>
+        </button>
+      </div>
+
+      <!-- Tab Content Area -->
+      <div class="flex-1 overflow-y-auto p-5 bg-[#0c0b0a]">
+        <!-- Watchlist Container -->
+        <div id="libraryWatchlistContainer" class="space-y-4">
+          <!-- Dynamically populated or empty state -->
+        </div>
+
+        <!-- History Container -->
+        <div id="libraryHistoryContainer" class="hidden space-y-4">
+          <!-- Dynamically populated or empty state -->
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div class="px-5 py-3 border-t border-[#2f2924] bg-[#161412] flex items-center justify-between text-[11px] text-slate-400">
+        <span class="flex items-center gap-1.5">
+          <svg class="w-3.5 h-3.5 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+          </svg>
+          <span>Saved locally on your device</span>
+        </span>
+        <button id="closeLibraryFooterBtn" class="px-3.5 py-1.5 rounded-lg bg-[#211d19] hover:bg-[#2b2520] text-slate-200 text-xs font-semibold border border-[#2f2924] transition cursor-pointer">
+          Done
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer class="border-t border-[#2f2924] py-6 text-center text-xs text-slate-500">
+    <div class="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
+      <p>CineSphere Browser • Multi-Provider Architecture (MovieBox, 4KHDHub, Stremio, CircleFTP, DhakaFlix)</p>
+      <div class="flex items-center gap-4 text-[11px] font-mono">
+        <span>Unified Trait Model</span>
+        <span>•</span>
+        <span>Provider Fallbacks</span>
+        <span>•</span>
+        <span>Server-Side Proxies</span>
+      </div>
+    </div>
+  </footer>
+
+  <!-- hls.js — in-browser HLS playback for browsers that don't natively support it -->
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
+  <!-- Application Script -->
+  <script src="/app.js?v=2.6.0"></script>
+</body>
+</html>
