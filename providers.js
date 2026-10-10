@@ -68,7 +68,7 @@ class HiAnimeProvider {
         // try fallback
       }
     }
-    return this.search('Demon Slayer');
+    return [];
   }
 
   async details(id) {
@@ -206,6 +206,7 @@ for (const vp of vegaProviders) {
 
 // Core primary providers queried in unified "All Providers" search
 const CORE_UNIFIED_PROVIDERS = [
+  'movieBoxApp',
   'addon',
   'showbox',
   'flixhq',
@@ -230,6 +231,7 @@ const TOP_PROVIDER = 'movieBoxWeb';
 const GENRE_SEARCH_PRIORITIES = {
   movies: [
     TOP_PROVIDER,
+    'movieBoxApp',
     'addon',          // Stremio Cinemeta metadata backbone
     'flixhq',
     'showbox',
@@ -254,6 +256,7 @@ const GENRE_SEARCH_PRIORITIES = {
   ],
   anime: [
     TOP_PROVIDER,
+    'movieBoxApp',
     'hiAnime',
     'gokuHD',
     'anikoto',
@@ -270,6 +273,7 @@ const GENRE_SEARCH_PRIORITIES = {
   ],
   drama: [
     TOP_PROVIDER,
+    'movieBoxApp',
     'mkvDrama',       // Asian/C-drama/K-drama specialist
     'kissKh',         // K-drama
     'zeefliz',        // Turkish dramas
@@ -283,6 +287,7 @@ const GENRE_SEARCH_PRIORITIES = {
   ],
   hollywood: [
     TOP_PROVIDER,
+    'movieBoxApp',
     'addon',
     'flixhq',
     'showbox',
@@ -300,6 +305,7 @@ const GENRE_SEARCH_PRIORITIES = {
   ],
   bollywood: [
     TOP_PROVIDER,
+    'movieBoxApp',
     '1cinevood',      // Cinewood (Hindi dub/regional)
     'luxMovies',      // RogMovies
     'topmovies',
@@ -416,7 +422,7 @@ function detectGenreFromQuery(query) {
  * automatically falls back to other providers so the user is never left with an empty result.
  * Deduplicates identical titles across providers so each movie is listed only once.
  */
-async function searchAll(query, specificProvider = null, genre = null) {
+async function searchAll(query, specificProvider = null, genre = null, page = 1) {
   if (!query || typeof query !== 'string') return [];
   const cleanQuery = query.trim();
 
@@ -431,7 +437,7 @@ async function searchAll(query, specificProvider = null, genre = null) {
     targetEntries.map(async ([name, p]) => {
       try {
         const items = await withTimeout(
-          p.instance.search(cleanQuery),
+          p.instance.search(cleanQuery, page),
           7000,
           `search(${name}) timed out`
         );
@@ -458,7 +464,7 @@ async function searchAll(query, specificProvider = null, genre = null) {
     const fbResults = await Promise.allSettled(
       fallbackEntries.map(async ([name, p]) => {
         try {
-          const items = await withTimeout(p.instance.search(cleanQuery), 7000, `search(${name}) timed out`);
+          const items = await withTimeout(p.instance.search(cleanQuery, page), 7000, `search(${name}) timed out`);
           return (items || []).map((i) => ({
             ...i,
             provider: name,
@@ -486,6 +492,9 @@ async function searchAll(query, specificProvider = null, genre = null) {
 function isVegaStyleId(id) {
   const s = String(id || '').trim();
   if (/^https?:\/\//i.test(s)) return !/strem\.io/i.test(s); // stremio meta URLs belong to 'addon'
+  // MovieBox Web detail paths are provider-specific and cannot be resolved
+  // by other Vega scrapers, even though they share the leading slash format.
+  if (/^\/moviesDetail\//i.test(s)) return false;
   return s.startsWith('/');
 }
 
@@ -520,6 +529,7 @@ async function getDetails(id, providerName = 'addon') {
     if (!title || typeof title !== 'string') return false;
     const t = title.trim();
     if (t.startsWith('/') || /^https?:\/\//i.test(t)) return false;
+    if (/^(?:404(?:\s+not found)?|page not found|not found|unknown title|untitled|n\/a|just a moment\b|access denied\b|oops[!,.]?\s+that page\b)/i.test(t)) return false;
     return t.length > 0;
   };
 
@@ -534,6 +544,9 @@ async function getDetails(id, providerName = 'addon') {
     }
     throw new Error(`Provider ${providerName} returned no usable details`);
   } catch (err) {
+    if (/^\/moviesDetail\//i.test(String(id || '').trim())) {
+      throw err;
+    }
     console.warn(`[getDetails] Provider ${providerName} error: ${err.message}. Trying fallbacks...`);
     // Only probe other providers when the id is a URL/link shared across scrapers.
     {
@@ -645,9 +658,12 @@ async function getStreams(id, providerName = 'movieBoxWeb', opts = {}) {
       const cleanTargetTitle = cleanTitleForDeduplication(titleToSearch) || normalizeTitle(titleToSearch);
       const isAnime = opts.type === 'anime' || /anime|naruto|one piece|bleach|titan|demon slayer|jujutsu/i.test(titleToSearch);
 
-      const fallbackList = isAnime
-        ? ['hiAnime', 'anikoto', 'kickAssAnime', 'movieBoxWeb', 'gokuHD', 'vega']
-        : ['movieBoxWeb', '4khdhub', 'vega', 'hdhub4u', 'mod', 'drive', 'circleftp', 'dhakaflix', 'showbox', 'gokuHD', 'addon'];
+      const providerFallbacks = isAnime
+        ? ['hiAnime', 'anikoto', 'kickAssAnime', 'gokuHD', 'vega']
+        : ['4khdhub', 'vega', 'hdhub4u', 'mod', 'drive', 'circleftp', 'dhakaflix', 'showbox', 'gokuHD', 'addon'];
+      const fallbackList = providerName === 'movieBoxWeb'
+        ? ['movieBoxApp', ...providerFallbacks]
+        : ['movieBoxWeb', 'movieBoxApp', ...providerFallbacks];
 
       for (const fbName of fallbackList) {
         if (tried.has(fbName) || !registry[fbName] || registry[fbName].disabled) continue;
@@ -766,13 +782,48 @@ function withTimeout(promise, ms, message) {
  * If empty or fails, falls back automatically to Stremio Cinemeta and GokuHD.
  * Returns deduplicated items with full provider metadata.
  */
-async function getCatalogHomepage(provider = 'movieBoxWeb', filter = '', page = 1) {
+async function getCatalogHomepage(provider = 'movieBoxWeb', filter = '', page = 1, genre = null) {
   let items = [];
+  if (provider === 'all' && genre === 'drama') {
+    const sourceIds = ['kissKh', 'mkvDrama', 'cinemaLuxe', 'Joya9tv', 'movieBoxWeb', 'movieBoxApp'];
+    const catalogs = await Promise.allSettled(sourceIds.map(async (sourceId) => {
+      const source = registry[sourceId];
+      if (!source || source.disabled || typeof source.instance.catalog !== 'function') return [];
+      const sourceFilter = sourceId === 'movieBoxWeb' ? '/' : '';
+      return withTimeout(
+        source.instance.catalog(sourceFilter, page),
+        5500,
+        `Drama catalog timeout for ${sourceId}`
+      );
+    }));
+    items = catalogs.flatMap((catalog, index) => {
+      if (catalog.status === 'rejected') {
+        console.warn(`[Catalog] ${sourceIds[index]} drama catalog failed:`, catalog.reason?.message || catalog.reason);
+        return [];
+      }
+      return Array.isArray(catalog.value) ? catalog.value : [];
+    });
+    items = items.map((item) => {
+      const source = registry[item.provider];
+      return {
+        ...item,
+        providerDisplayName: item.providerDisplayName || source?.displayName || item.provider,
+      };
+    });
+  }
   const targetProvider = provider && provider !== 'all' ? provider : 'movieBoxWeb';
+  const animeProviders = ['hiAnime', 'anikoto', 'kickAssAnime', 'animetsu', 'tokyoInsider', 'uniquestream', 'animesalt', 'animeworld'];
+  const dramaProviders = ['kissKh', 'mkvDrama', 'cinemaLuxe', 'Joya9tv'];
+  const catalogGroup = animeProviders.includes(targetProvider)
+    ? animeProviders
+    : dramaProviders.includes(targetProvider)
+      ? dramaProviders
+      : null;
 
-  // 1. Try requested provider first
+  // Genre aggregation above already queried the known drama catalog sources.
+  // Other catalog requests retain the existing provider-first fallback flow.
   const primary = registry[targetProvider]?.instance;
-  if (primary && typeof primary.catalog === 'function') {
+  if (provider !== 'all' && primary && typeof primary.catalog === 'function') {
     try {
       items = await withTimeout(
         primary.catalog(filter, page),
@@ -784,24 +835,39 @@ async function getCatalogHomepage(provider = 'movieBoxWeb', filter = '', page = 
     }
   }
 
-  // 2. If primary returned no items and user wanted 'all' or fallback, try default movieBoxWeb
-  if ((!items || items.length === 0) && targetProvider !== 'movieBoxWeb') {
+  // Genre-specific catalogs must not silently fall back to unrelated movie titles.
+  if (provider !== 'all' && (!items || items.length === 0) && catalogGroup) {
+    for (const fallbackId of catalogGroup) {
+      const fallback = registry[fallbackId];
+      if (fallbackId === targetProvider || !fallback || fallback.disabled ||
+          typeof fallback.instance.catalog !== 'function') continue;
+      try {
+        items = await withTimeout(
+          fallback.instance.catalog('', page),
+          5500,
+          `Catalog timeout for ${fallbackId}`
+        );
+        if (items?.length) break;
+      } catch (err) {
+        console.warn(`[Catalog] ${fallbackId} fallback failed:`, err.message);
+      }
+    }
+  }
+
+  // 2. For general catalogs, try MovieBox Web when another provider is empty.
+  if (provider !== 'all' && (!items || items.length === 0) && !catalogGroup && targetProvider !== 'movieBoxWeb') {
     const mbw = registry.movieBoxWeb?.instance;
     if (mbw && typeof mbw.catalog === 'function') {
       try {
-        items = await withTimeout(
-          mbw.catalog('/', page),
-          5500,
-          'Catalog timeout for movieBoxWeb'
-        );
+        items = await withTimeout(mbw.catalog('/', page), 5500, 'Catalog timeout for movieBoxWeb');
       } catch (err) {
         console.warn('[Catalog] MovieBoxWeb fallback failed:', err.message);
       }
     }
   }
 
-  // 3. Fallback to Stremio Cinemeta top movies if still empty
-  if (!items || items.length === 0) {
+  // 3. Generic catalog fallbacks are appropriate only for unfiltered catalogs.
+  if (provider !== 'all' && (!items || items.length === 0) && !catalogGroup) {
     const addon = registry.addon?.instance;
     if (addon && typeof addon.catalog === 'function') {
       try {
@@ -817,7 +883,7 @@ async function getCatalogHomepage(provider = 'movieBoxWeb', filter = '', page = 
   }
 
   // 4. Fallback to GokuHD if still empty
-  if (!items || items.length === 0) {
+  if (provider !== 'all' && (!items || items.length === 0) && !catalogGroup) {
     const goku = registry.gokuHD?.instance;
     if (goku && typeof goku.catalog === 'function') {
       try {
@@ -830,66 +896,6 @@ async function getCatalogHomepage(provider = 'movieBoxWeb', filter = '', page = 
         console.warn('[Catalog] GokuHD fallback failed:', err.message);
       }
     }
-  }
-
-  // 5. Final safety net: if all network catalog scrapers fail, return curated popular media
-  if (!items || items.length === 0) {
-    items = [
-      {
-        subjectId: '/moviesDetail/inception-e1BOR6f19C7',
-        title: 'Inception',
-        year: 2010,
-        poster: 'https://image.tmdb.org/t/p/w500/edv5CZvWj09upOsy2Y6IwDhK8bt.jpg',
-        type: 'movie',
-        provider: 'movieBoxWeb',
-        providerDisplayName: 'MovieBox Web',
-      },
-      {
-        subjectId: '/moviesDetail/interstellar-e1BOUX84nC6',
-        title: 'Interstellar',
-        year: 2014,
-        poster: 'https://image.tmdb.org/t/p/w500/gEU2QniE6E77NI6lCU6MxlNBvIx.jpg',
-        type: 'movie',
-        provider: 'movieBoxWeb',
-        providerDisplayName: 'MovieBox Web',
-      },
-      {
-        subjectId: '/moviesDetail/dune-part-two-mK6R2G7d216',
-        title: 'Dune: Part Two',
-        year: 2024,
-        poster: 'https://image.tmdb.org/t/p/w500/1pdfLvkbY9ohJlCjQH2CZjjYVvJ.jpg',
-        type: 'movie',
-        provider: 'movieBoxWeb',
-        providerDisplayName: 'MovieBox Web',
-      },
-      {
-        subjectId: 'series:tt0903747',
-        title: 'Breaking Bad',
-        year: 2008,
-        poster: 'https://image.tmdb.org/t/p/w500/ggFHVNu6YYI5L9pCfOacjizRGt.jpg',
-        type: 'series',
-        provider: 'addon',
-        providerDisplayName: 'Stremio Cinemeta',
-      },
-      {
-        subjectId: '/moviesDetail/spider-man-no-way-home-9a8b7c6d5e4',
-        title: 'Spider-Man: No Way Home',
-        year: 2021,
-        poster: 'https://image.tmdb.org/t/p/w500/1g0dhYtq4irTY1GPXvft6k4YLjm.jpg',
-        type: 'movie',
-        provider: 'movieBoxWeb',
-        providerDisplayName: 'MovieBox Web',
-      },
-      {
-        subjectId: '/moviesDetail/oppenheimer-5f4e3d2c1b0',
-        title: 'Oppenheimer',
-        year: 2023,
-        poster: 'https://image.tmdb.org/t/p/w500/8Gxv8gSFCU0XGDykEGv7zR1n2ua.jpg',
-        type: 'movie',
-        provider: 'movieBoxWeb',
-        providerDisplayName: 'MovieBox Web',
-      },
-    ];
   }
 
   // Deduplicate items to ensure clean display

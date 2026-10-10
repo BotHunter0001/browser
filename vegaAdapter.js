@@ -205,9 +205,29 @@ class VegaAdapter {
     if (!title) throw new Error(`${this.displayName}: getMeta returned no title`);
 
     const yearMatch = title.match(/\b(19\d{2}|20\d{2})\b/);
-    const year = meta.year ? Number(meta.year) : (yearMatch ? Number(yearMatch[1]) : null);
-    const isSeries = meta.type === 'series' || meta.type === 'tv' || title.toLowerCase().includes('season');
-
+    const tags = Array.isArray(meta.tags) ? meta.tags : [];
+    const tagYear = tags.find((tag) => /^(19|20)\d{2}$/.test(String(tag).trim()));
+    const countries = new Set([
+      'china', 'hong kong', 'india', 'indonesia', 'japan', 'korea', 'south korea',
+      'malaysia', 'philippines', 'singapore', 'taiwan', 'thailand', 'vietnam',
+      'united states', 'united kingdom', 'canada', 'australia', 'new zealand',
+      'france', 'germany', 'italy', 'spain', 'poland', 'south africa', 'turkey',
+      'turkiye', 'brazil', 'mexico', 'argentina',
+    ]);
+    const country = meta.country || meta.countryName ||
+      tags.find((tag) => countries.has(String(tag).trim().toLowerCase())) || '';
+    const year = meta.year
+      ? Number(meta.year)
+      : yearMatch
+        ? Number(yearMatch[1])
+        : tagYear
+          ? Number(tagYear)
+          : null;
+    const genres = Array.isArray(meta.genres)
+      ? meta.genres
+      : tags.filter((tag) =>
+        String(tag) !== String(country) && !/^(19|20)\d{2}$/.test(String(tag).trim())
+      );
     const { normalizeSeasons } = require('./lib/seasonParser');
     let seasons = [];
     try {
@@ -218,14 +238,20 @@ class VegaAdapter {
     } catch {
       seasons = [];
     }
+    const isSeries =
+      meta.type === 'series' ||
+      meta.type === 'tv' ||
+      title.toLowerCase().includes('season') ||
+      seasons.length > 0;
 
     return {
       subjectId: id,
       title,
       description: meta.synopsis || meta.description || 'No overview available.',
       year,
+      country,
       poster: meta.image || meta.poster || null,
-      genres: meta.genres || [],
+      genres,
       duration: null,
       rating: meta.rating || meta.imdbRating || null,
       type: isSeries ? 'series' : 'movie',

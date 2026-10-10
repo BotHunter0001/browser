@@ -86,7 +86,7 @@ Optional fields may be absent or null. `type` is normalized for the UI to `movie
 
 ### Details and Episodes
 
-Details extend a search item with optional `description`, `genres`, `duration`, `rating`, and `seasons`. A season carries `seasonNumber`, `title`, `episodeCount`, and `episodes`; an episode carries `episodeNumber`, `title`, and a provider `streamId` (or a compatible `link`). Providers can have incomplete episode metadata.
+Details extend a search item with optional `description`, `country`, `genres`, `duration`, `rating`, and `seasons`. Country and year values supplied as provider tags are normalized into their own fields rather than displayed as genres. A season carries `seasonNumber`, `title`, `episodeCount`, and `episodes`; an episode carries `episodeNumber`, `title`, and a provider `streamId` (or a compatible `link`). Providers can have incomplete episode metadata.
 
 ### Releases and Mirrors
 
@@ -102,7 +102,8 @@ All API routes are same-origin with the browser UI. JSON route failures generall
 | `GET /api/session` | None | Provider count and placeholder host/token fields; not real authentication/session state. |
 | `POST /api/hosts/rotate` | None | Stub returning `{ "ok": true }`; no gateway rotation currently occurs. |
 | `GET /api/providers` | None | `{ providers, count }`, with IDs, display names, category/type, Vega flag, and disabled state. |
-| `GET /api/search` | `q` or `query`; optional `provider`, `genre` or `type` | `{ query, provider, genre, count, results }`. Query is trimmed and capped at 200 characters. Genre priorities include movies, anime, drama, Hollywood, and Bollywood plus aliases. |
+| `GET /api/catalog/homepage` | Optional `provider`, `genre` or `type`, `page` (1-50) | `{ ok, provider, count, results, metas }`; catalog results support provider page selection. The all-provider Asian drama catalog combines enabled drama catalogs with MovieBox Web series, then keeps series whose metadata identifies an Asian origin. |
+| `GET /api/search` | `q` or `query`; optional `provider`, `genre` or `type`, `page` (1-50) | `{ query, provider, genre, page, hasMore, count, results }`. Query is trimmed and capped at 200 characters. Genre priorities include movies, anime, drama, Hollywood, and Bollywood plus aliases. |
 | `GET /api/details/:id` | Optional `provider` | Normalized title details. IDs are capped at 500 characters. |
 | `GET /api/streams/:id` | Optional `provider`, `minSources` (0-10), `maxFallbacks` (0-15) | `{ subjectId, provider, count, releases }`; source lookup and fallback. |
 | `POST /api/episode-streams` | JSON `{ title, season, episode, candidates }` | Resolves matching series candidates and returns a provider/stream ID and releases, or an empty release result. Candidate input is capped at 20. |
@@ -122,14 +123,14 @@ Unknown `/api/*` paths return JSON 404. Other unmatched paths serve `public/inde
 - Details cache: 30 minutes, maximum 500 keys.
 - Stream cache: 3 minutes, maximum 300 keys.
 - Poster cache: 10 minutes, maximum 500 keys.
-- `TTLCache` refreshes LRU order on reads, evicts the oldest entry at capacity, coalesces concurrent loads for a key, and does not store empty arrays.
+- `TTLCache` refreshes LRU order on reads, evicts the oldest entry at capacity, coalesces concurrent loads for a key, and supports skipping empty results (including empty catalog responses) so providers can recover without waiting for a cache expiry.
 - Search requests are limited to 60 per minute per limiter key. Stream/source lookup route families are configured for 40 per minute per limiter key. All limiter state is in memory.
 - Provider calls have provider-level and/or orchestration-level timeouts; a timeout from one search provider is isolated from other providers.
 
 ## Network Safety and Deployment
 
 - `safeFetch` accepts only HTTP(S), rejects URLs with embedded credentials, resolves destination addresses, and blocks loopback, link-local, unspecified, and multicast addresses. It revalidates each redirect hop and caps redirect count.
-- `ALLOW_PRIVATE_NETWORKS` defaults to true so BDIX/private-network providers can work. Setting it to `false` also blocks private ranges. This tradeoff is security-sensitive: the application has no authentication, so keep it on localhost or a trusted network. Do not expose it to untrusted users with private-network access enabled.
+- `ALLOW_PRIVATE_NETWORKS` defaults to true so BDIX/private-network providers can work. Setting it to `false` also blocks private ranges. This tradeoff is security-sensitive: the application has no authentication, and the server defaults to binding all interfaces (`0.0.0.0`). Restrict the bind address/network and disable private destinations before exposing it to untrusted users.
 - Proxy-supplied headers are restricted to `referer`, `origin`, `cookie`, `user-agent`, `authorization`, `accept`, and `accept-language`, with value length and CR/LF checks.
 - Media proxying preserves backpressure, forwards byte-range metadata, and aborts upstream requests when the client disconnects.
 - Security headers include `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and `X-Frame-Options: DENY`. The JSON body limit is 100 KB.
@@ -139,12 +140,11 @@ Unknown `/api/*` paths return JSON 404. Other unmatched paths serve `public/inde
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `PORT` | `3000` | HTTP port. |
-| `HOST` | `127.0.0.1` | Bind address. Set explicitly to `0.0.0.0` to expose on network interfaces. |
+| `HOST` | `0.0.0.0` | Bind address. Use `127.0.0.1` to restrict access to the local machine. |
 | `ALLOW_PRIVATE_NETWORKS` | Enabled unless set to `false` | Allow private destination ranges for proxy requests; required by some BDIX integrations. |
 | `FOURKDH_BASE` | Defined in `fourkdhhub.js` | Override the 4KHDHub upstream base URL. |
-| `MOVIEBOX_SECRET` | Empty in `.env.example` | Listed in the template but not referenced by current JavaScript source; setting it has no demonstrated runtime effect. |
 
-The project does not load `.env` automatically. Export variables in the process environment or use deployment tooling that supplies them.
+The project does not load `.env` automatically. `.env.example` is a configuration reference only; export variables in the process environment or use deployment tooling that supplies them.
 
 ## Development and Validation
 

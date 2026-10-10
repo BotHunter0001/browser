@@ -31,7 +31,9 @@ app.use(express.static(path.join(__dirname, 'public'), { maxAge: 0, etag: false 
 const hits = new Map();
 function rateLimit(max, windowMs) {
   return (req, res, next) => {
-    const key = req.ip + req.path.split('/')[2];
+    const routeKey = String(req.baseUrl || req.path || '/').replace(/\/+$/, '') || '/';
+    const clientIp = req.ip || req.socket?.remoteAddress || 'unknown';
+    const key = `${clientIp}:${routeKey}`;
     const now = Date.now();
     const e = hits.get(key) || { n: 0, reset: now + windowMs };
     if (now > e.reset) { e.n = 0; e.reset = now + windowMs; }
@@ -86,41 +88,90 @@ app.get('/api/providers', (req, res) => {
 // Vega catalog listings (e.g. MovieBox Web) don't expose movie/series type, so every
 // card defaulted to "movie". Resolve the real type from details (bounded concurrency +
 // timeout), which also pre-warms the details cache for faster card opens.
-const TYPE_ENRICH_TIMEOUT_MS = 6000;
 const TYPE_ENRICH_CONCURRENCY = 6;
-async function enrichCatalogTypes(data) {
-  const results = Array.isArray(data?.results) ? data.results : [];
-  const targets = results.filter((it) => it?.subjectId && registry[it.provider]?.isVega);
-  if (!targets.length) return data;
+function hasUsableMediaDetails(details) {
+  const title = String(details?.title || '').trim();
+  return Boolean(
+    title &&
+    !title.startsWith('/') &&
+    !/^https?:\/\//i.test(title) &&
+    !/^(?:404(?:\s+not found)?|page not found|not found|unknown title|untitled|n\/a|oops[!,.]?\s+that page\b)/i.test(title)
+  );
+}
+
+async function enrichVegaTypes(items) {
+  const targets = items.filter((item) =>
+    item?.subjectId &&
+    item.provider === 'movieBoxWeb' &&
+    /^\/moviesDetail\//i.test(String(item.subjectId))
+  );
 
   let cursor = 0;
+  let complete = true;
   const worker = async () => {
     while (cursor < targets.length) {
       const item = targets[cursor++];
       try {
         const details = await detailsCache.wrap(`${item.provider}::${item.subjectId}`, () =>
-          getDetails(item.subjectId, item.provider)
+          registry[item.provider].instance.details(item.subjectId)
         );
-        if (details?.type === 'movie' || details?.type === 'series') item.type = details.type;
+        if (!hasUsableMediaDetails(details)) throw new Error('Provider returned unusable details');
+        if (details.type === 'movie' || details.type === 'series') item.type = details.type;
+        else {
+          item.type = 'unknown';
+          complete = false;
+        }
         if (!item.year && details?.year) item.year = details.year;
+        if (!item.country && details?.country) item.country = details.country;
+        if (Array.isArray(details?.genres)) item.genres = details.genres;
       } catch {
-        // keep heuristic type when details lookup fails
+        item.type = 'unknown';
+        complete = false;
       }
     }
   };
-  const timeout = new Promise((resolve) => setTimeout(resolve, TYPE_ENRICH_TIMEOUT_MS).unref());
-  await Promise.race([
-    Promise.all(Array.from({ length: Math.min(TYPE_ENRICH_CONCURRENCY, targets.length) }, worker)),
-    timeout,
-  ]);
+  if (targets.length) {
+    await Promise.all(Array.from({ length: Math.min(TYPE_ENRICH_CONCURRENCY, targets.length) }, worker));
+  }
+  return complete;
+}
 
-  if (Array.isArray(data.metas)) {
-    const typeById = new Map(results.map((it) => [it.subjectId, it.type]));
-    for (const meta of data.metas) {
-      const t = typeById.get(meta.id);
-      if (t === 'movie' || t === 'series') meta.type = t;
+async function enrichCatalogTypes(data, genre = null) {
+  const results = Array.isArray(data?.results) ? data.results : [];
+  const typesVerified = await enrichVegaTypes(results);
+
+  if (genre === 'drama') {
+    const asianRegions = new Set([
+      'china', 'chinese', 'hong kong', 'india', 'indian', 'indonesia', 'indonesian',
+      'japan', 'japanese', 'korea', 'south korea', 'korean', 'malaysia', 'malaysian',
+      'philippines', 'philippine', 'singapore', 'taiwan', 'taiwanese', 'thailand',
+      'thai', 'vietnam', 'vietnamese',
+    ]);
+    data.results = results.filter((item) =>
+      item.type === 'series' &&
+      (
+        asianRegions.has(String(item.country || '').trim().toLowerCase()) ||
+        (item.genres || []).some((tag) => asianRegions.has(String(tag).trim().toLowerCase()))
+      )
+    );
+    const visibleIds = new Set(data.results.map((item) => item.subjectId));
+    data.count = data.results.length;
+    if (Array.isArray(data.metas)) {
+      data.metas = data.metas.filter((meta) => visibleIds.has(meta.id));
     }
   }
+
+  if (Array.isArray(data.metas)) {
+    const itemById = new Map(results.map((item) => [item.subjectId, item]));
+    for (const meta of data.metas) {
+      const item = itemById.get(meta.id);
+      if (item?.type === 'movie' || item?.type === 'series') meta.type = item.type;
+      if (item?.year) meta.year = item.year;
+      if (item?.country) meta.country = item.country;
+      if (Array.isArray(item?.genres)) meta.genres = item.genres;
+    }
+  }
+  data.typesVerified = typesVerified;
   return data;
 }
 
@@ -136,14 +187,20 @@ app.get([
   '/api/home',
   '/api/homepage',
 ], async (req, res) => {
-  const rawProv = cleanProvider(req.params.provider || req.query.provider, 'movieBoxWeb');
-  const provider = rawProv === 'all' ? 'movieBoxWeb' : rawProv;
-  const filter = String(req.query.filter || req.query.genre || '').trim().slice(0, 100);
+  const rawProv = cleanProvider(req.params.provider || req.query.provider, null);
+  const genre = String(req.query.genre || req.query.type || '').trim().toLowerCase().slice(0, 30);
+  let provider = rawProv && rawProv !== 'all' ? rawProv : 'movieBoxWeb';
+  if ((!rawProv || rawProv === 'all') && genre === 'anime') provider = 'anikoto';
+  if ((!rawProv || rawProv === 'all') && genre === 'drama') provider = 'all';
+  const filter = String(req.query.filter || (genre === 'drama' ? '' : genre)).trim().slice(0, 100);
   const page = clampInt(req.query.page, 1, 50, 1);
 
   try {
-    const data = await catalogCache.wrap(`catalog::${provider}::${filter}::${page}`, async () =>
-      enrichCatalogTypes(await getCatalogHomepage(provider, filter, page))
+    const data = await catalogCache.wrap(
+      `catalog::${provider}::${genre}::${filter}::${page}`,
+      async () => enrichCatalogTypes(await getCatalogHomepage(provider, filter, page, genre), genre),
+      undefined,
+      (catalog) => catalog.count > 0 && catalog.typesVerified
     );
     res.json({
       ok: true,
@@ -191,6 +248,7 @@ app.get('/api/search', async (req, res) => {
   const query = String(req.query.q || req.query.query || '').trim().slice(0, 200);
   const rawProv = cleanProvider(req.query.provider, null);
   const provider = rawProv === 'all' ? null : rawProv;
+  const page = clampInt(req.query.page, 1, 50, 1);
   // Optional genre: movies | anime | drama | hollywood | bollywood
   // Selects which provider priority list sorts the results (movieBoxWeb always top).
   const genre = String(req.query.genre || req.query.type || '').trim().toLowerCase().slice(0, 30) || null;
@@ -200,11 +258,23 @@ app.get('/api/search', async (req, res) => {
   }
 
   try {
-    const results = await searchCache.wrap(`${provider || 'all'}::${genre || 'auto'}::${query.toLowerCase()}`, () => searchAll(query, provider, genre));
+    const cached = await searchCache.wrap(
+      `${provider || 'all'}::${genre || 'auto'}::${page}::${query.toLowerCase()}`,
+      async () => {
+        const results = await searchAll(query, provider, genre, page);
+        const complete = await enrichVegaTypes(results);
+        return { results, complete };
+      },
+      undefined,
+      (value) => value.complete
+    );
+    const results = cached.results;
     res.json({
       query,
       provider: provider || 'all',
       genre: genre || 'auto',
+      page,
+      hasMore: results.length > 0,
       count: results.length,
       results,
     });
@@ -340,6 +410,7 @@ async function pipeStream(upstream, res, req, extraResponseHeaders = []) {
 }
 
 const BLOCKED_STATUSES = new Set([401, 403, 426, 429]);
+const DIRECT_REDIRECT_STATUSES = new Set([401, 403, 426, 429]);
 
 // Some CDNs (e.g. MovieBox's hakunaymatata) reject the provider-supplied
 // Referer/Origin or block datacenter IPs. Retry once with bare headers, and
@@ -352,7 +423,7 @@ async function fetchMediaUpstream(targetUrl, req, signal) {
     if (req.headers.range) bare['Range'] = req.headers.range;
     upstream = await safeFetch(targetUrl, { headers: bare, signal });
   }
-  const blocked = !upstream.ok && upstream.status !== 206;
+  const blocked = DIRECT_REDIRECT_STATUSES.has(upstream.status);
   if (blocked) {
     try { upstream.body?.cancel(); } catch { /* ignore */ }
   }
