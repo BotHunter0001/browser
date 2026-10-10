@@ -114,6 +114,10 @@ a:focus-visible {
   box-shadow: 0 10px 30px -20px rgba(0, 0, 0, 0.85);
 }
 
+.nav-provider-badge {
+  max-width: 9rem;
+}
+
 .nav-button {
   display: inline-flex;
   align-items: center;
@@ -292,6 +296,14 @@ a:focus-visible {
   background: rgba(7, 6, 6, 0.86);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
+}
+
+.media-detail-overview {
+  border: 1px solid rgba(71, 60, 52, 0.72);
+  border-radius: var(--radius-lg);
+  background:
+    radial-gradient(ellipse at 95% 0%, rgba(139, 92, 246, 0.1), transparent 55%),
+    linear-gradient(145deg, rgba(31, 27, 23, 0.82), rgba(15, 14, 13, 0.9));
 }
 
 /* Animations */
