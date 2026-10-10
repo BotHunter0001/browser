@@ -1,21 +1,27 @@
 /* CineSphere Browser Stylesheet */
 
 :root {
-  --bg-primary: #0c0b0a;
-  --bg-surface: #161412;
-  --bg-surface-elevated: #211d19;
-  --bg-surface-hover: #2c2621;
-  --border-subtle: #2f2924;
-  --border-hover: #4a4038;
-  --text-primary: #f1f5f9;
-  --text-secondary: #94a3b8;
-  --text-muted: #64748b;
-  --accent-rose: #f59e0b;
-  --accent-amber-hover: #e11d48;
-  --accent-amber-glow: rgba(245, 158, 11, 0.22);
-  --accent-cyan: #06b6d4;
-  --accent-amber: #f59e0b;
-  --accent-emerald: #10b981;
+  --bg-primary: #090d1a;
+  --bg-surface: #121a2b;
+  --bg-surface-elevated: #1b2438;
+  --bg-surface-hover: #222d45;
+  --bg-surface-soft: rgba(18, 26, 43, 0.92);
+  --border-subtle: #24314d;
+  --border-strong: #334766;
+  --border-hover: #44608d;
+  --text-primary: #edf5ff;
+  --text-secondary: #d8e4ff;
+  --text-muted: #9caed0;
+  --text-soft: #7c8cb3;
+  --accent-rose: #8b5cf6;
+  --accent-amber-hover: #ec4899;
+  --accent-amber-glow: rgba(139, 92, 246, 0.22);
+  --accent-amber-strong: #a78bfa;
+  --accent-cyan: #22d3ee;
+  --accent-amber: #8b5cf6;
+  --accent-emerald: #34d399;
+  --focus-ring: rgba(167, 139, 250, 0.35);
+  --shadow-soft: 0 18px 35px -20px rgba(2, 6, 23, 0.95);
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 16px;
@@ -29,6 +35,10 @@
   padding: 0;
 }
 
+html {
+  color-scheme: dark;
+}
+
 body {
   background-color: var(--bg-primary);
   color: var(--text-primary);
@@ -37,6 +47,38 @@ body {
   line-height: 1.5;
   display: flex;
   flex-direction: column;
+  letter-spacing: -0.01em;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+a:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--focus-ring);
+  border-color: rgba(251, 191, 36, 0.85);
+}
+
+::selection {
+  background: rgba(245, 158, 11, 0.25);
+  color: white;
 }
 
 /* Custom Scrollbar */
@@ -60,31 +102,82 @@ body {
   background: rgba(22, 20, 18, 0.72);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid rgba(71, 60, 52, 0.9);
+  box-shadow: var(--shadow-soft);
 }
 
 .glass-header {
   background: rgba(12, 11, 10, 0.8);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: 1px solid rgba(71, 60, 52, 0.9);
+  box-shadow: 0 10px 30px -20px rgba(0, 0, 0, 0.85);
+}
+
+.nav-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  min-height: 2.25rem;
+  padding: 0.45rem 0.7rem;
+  border-radius: 0.9rem;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.nav-button:hover {
+  background: rgba(28, 24, 22, 0.9);
+  border-color: rgba(71, 60, 52, 0.9);
+  color: var(--text-primary);
+  transform: none;
+}
+
+.nav-button.active {
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.2), rgba(22, 20, 18, 0.96));
+  border-color: rgba(139, 92, 246, 0.7);
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 12px 22px -18px rgba(139, 92, 246, 0.9);
+}
+
+.nav-button svg {
+  width: 0.95rem;
+  height: 0.95rem;
+  stroke-width: 1.8;
+}
+
+.nav-button .nav-badge {
+  display: inline-flex;
+  min-width: 1.1rem;
+  height: 1.1rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0 0.2rem;
+  border-radius: 9999px;
+  font-size: 0.55rem;
+  line-height: 1;
+  font-weight: 700;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
 }
 
 /* Media Cards (Streaming Platform Style) */
 .media-card {
   position: relative;
   background: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid rgba(71, 60, 52, 0.9);
   border-radius: var(--radius-md);
   overflow: hidden;
   transition: var(--transition);
   display: flex;
   flex-direction: column;
+  box-shadow: 0 10px 20px -18px rgba(0, 0, 0, 0.8);
 }
 
 .media-card:hover {
   transform: translateY(-4px);
-  border-color: var(--accent-amber);
+  border-color: rgba(245, 158, 11, 0.85);
   box-shadow: 0 12px 24px -10px rgba(0, 0, 0, 0.7), 0 0 20px -5px var(--accent-amber-glow);
 }
 
@@ -112,8 +205,8 @@ body {
 .channel-card {
   padding: 10px 12px;
   border-radius: var(--radius-md);
-  background: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface-soft);
+  border: 1px solid rgba(71, 60, 52, 0.9);
   cursor: pointer;
   transition: var(--transition);
   user-select: none;
@@ -122,25 +215,25 @@ body {
 
 .channel-card:hover {
   background: var(--bg-surface-elevated);
-  border-color: var(--accent-amber);
+  border-color: rgba(245, 158, 11, 0.75);
   transform: translateY(-2px);
   box-shadow: 0 4px 16px -4px var(--accent-amber-glow);
 }
 
 .channel-card.active {
   background: linear-gradient(135deg, rgba(245, 158, 11, 0.16), rgba(22, 20, 18, 0.95));
-  border-color: var(--accent-amber);
+  border-color: rgba(245, 158, 11, 0.8);
   box-shadow: 0 0 16px -2px var(--accent-amber-glow);
 }
 
 /* Badges */
 .badge-movie {
-  background: linear-gradient(135deg, rgba(245, 158, 11, 0.95), rgba(217, 119, 6, 0.95));
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.96), rgba(236, 72, 153, 0.96));
   color: #fff;
 }
 
 .badge-series {
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.9), rgba(79, 70, 229, 0.9));
+  background: linear-gradient(135deg, rgba(34, 211, 238, 0.9), rgba(59, 130, 246, 0.9));
   color: #fff;
 }
 
@@ -151,7 +244,7 @@ body {
   border-radius: 9999px;
   background: var(--bg-surface);
   color: var(--text-secondary);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid rgba(71, 60, 52, 0.9);
   cursor: pointer;
   transition: var(--transition);
   user-select: none;
@@ -160,27 +253,28 @@ body {
 .quick-chip:hover {
   background: var(--bg-surface-elevated);
   color: var(--text-primary);
-  border-color: var(--accent-rose);
+  border-color: rgba(245, 158, 11, 0.8);
   transform: translateY(-1px);
 }
 
 .quick-chip.active {
-  background: var(--accent-rose);
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.96), rgba(236, 72, 153, 0.96));
   color: white;
-  border-color: var(--accent-rose);
+  border-color: rgba(139, 92, 246, 0.8);
+  box-shadow: 0 8px 16px -10px rgba(139, 92, 246, 0.9);
 }
 
 /* Release Item Card */
 .release-card {
   background: var(--bg-surface-elevated);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid rgba(71, 60, 52, 0.9);
   border-radius: var(--radius-md);
   padding: 1rem;
   transition: var(--transition);
 }
 
 .release-card:hover {
-  border-color: var(--accent-rose);
+  border-color: rgba(245, 158, 11, 0.8);
   background: var(--bg-surface-hover);
 }
 
@@ -189,7 +283,7 @@ body {
   background: #000;
   border-radius: var(--radius-md);
   overflow: hidden;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid rgba(71, 60, 52, 0.9);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.8);
 }
 
@@ -220,8 +314,8 @@ body {
 
 body {
   background:
-    radial-gradient(1200px 600px at 10% -10%, rgba(245, 158, 11, 0.08), transparent 60%),
-    radial-gradient(900px 500px at 110% 10%, rgba(185, 28, 28, 0.08), transparent 60%),
+    radial-gradient(1200px 600px at 10% -10%, rgba(139, 92, 246, 0.12), transparent 60%),
+    radial-gradient(900px 500px at 110% 10%, rgba(34, 211, 238, 0.08), transparent 60%),
     var(--bg-primary);
   background-attachment: fixed;
 }
@@ -257,6 +351,21 @@ header.sticky { position: sticky; z-index: 30; }
   background-size: 200% 100%;
   animation: shimmer 1.3s linear infinite;
 }
+
+button,
+input,
+select {
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease, transform 0.2s ease;
+}
+
+button:hover {
+  transform: translateY(-1px);
+}
+
+button:active {
+  transform: translateY(0);
+}
+
 @keyframes shimmer { to { background-position: -200% 0; } }
 
 .quick-chip.active { color: #1a1206; font-weight: 700; }
