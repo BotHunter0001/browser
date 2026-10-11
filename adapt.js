@@ -2,19 +2,20 @@
  * adapt.js - Normalizes provider JSON responses into clean application models.
  */
 
+/** Parses a year from `raw.releaseDate` (ISO string) or `raw.year` (number/string). */
+function parseYear(raw) {
+  if (raw.releaseDate) {
+    const parsed = parseInt(String(raw.releaseDate).slice(0, 4), 10);
+    if (!isNaN(parsed)) return parsed;
+  }
+  if (raw.year) return Number(raw.year);
+  return null;
+}
+
 function toCatalogItem(raw) {
   if (!raw) return null;
   const subjectId = String(raw.subjectId ?? raw.id ?? '');
   const title = raw.title ?? raw.name ?? raw.postTitle ?? 'Untitled';
-  
-  let year = null;
-  if (raw.releaseDate) {
-    const parsed = parseInt(String(raw.releaseDate).slice(0, 4), 10);
-    if (!isNaN(parsed)) year = parsed;
-  } else if (raw.year) {
-    year = Number(raw.year);
-  }
-
   const poster = raw.cover?.url ?? raw.poster ?? raw.stills?.url ?? null;
   // subjectType: 1 = movie, 2 = series / tv
   const type = raw.subjectType === 2 || raw.type === 'series' || (raw.seNum && raw.seNum > 0)
@@ -24,7 +25,7 @@ function toCatalogItem(raw) {
   return {
     subjectId,
     title,
-    year,
+    year: parseYear(raw),
     poster,
     type,
     seasonNum: raw.seNum ?? null,
@@ -35,14 +36,6 @@ function toMediaDetails(raw) {
   if (!raw) return null;
   const subjectId = String(raw.subjectId ?? raw.id ?? '');
   const title = raw.title ?? raw.name ?? raw.postTitle ?? 'Untitled';
-
-  let year = null;
-  if (raw.releaseDate) {
-    const parsed = parseInt(String(raw.releaseDate).slice(0, 4), 10);
-    if (!isNaN(parsed)) year = parsed;
-  } else if (raw.year) {
-    year = Number(raw.year);
-  }
 
   // Genres parsing
   let genres = [];
@@ -81,7 +74,7 @@ function toMediaDetails(raw) {
     subjectId,
     title,
     description: raw.description ?? raw.overview ?? 'No overview available.',
-    year,
+    year: parseYear(raw),
     poster: raw.cover?.url ?? raw.stills?.url ?? raw.poster ?? null,
     genres,
     duration,

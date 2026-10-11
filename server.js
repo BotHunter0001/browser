@@ -671,13 +671,34 @@ app.get('/api/subtitle', async (req, res) => {
 
   try {
     const upstream = await safeFetch(targetUrl, {
-      headers: { 'User-Agent': BROWSER_UA },
-      signal: AbortSignal.timeout(10000),
+      headers: { 'User-Agent': BROWSER_UA, Accept: 'text/vtt, text/plain, */*' },
+      signal: AbortSignal.timeout(15000),
     });
 
     if (!upstream.ok) return res.status(upstream.status).send('Subtitle fetch failed');
 
-    const raw = await upstream.text();
+    if (!upstream.body) return res.status(502).send('Subtitle response has no body');
+    const maxBytes = 2 * 1024 * 1024;
+    const reader = upstream.body.getReader();
+    const chunks = [];
+    let totalBytes = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel();
+        return res.status(413).send('Subtitle file is too large');
+      }
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    const raw = Buffer.from(bytes).toString('utf8').replace(/^\uFEFF/, '');
     const ct = upstream.headers.get('content-type') || '';
 
     let vtt;
@@ -691,7 +712,7 @@ app.get('/api/subtitle', async (req, res) => {
       // 3. Replace comma decimal separator in timestamps with dot
       //    (SRT: 00:01:23,456 → VTT: 00:01:23.456)
       vtt = 'WEBVTT\n\n' + raw
-        .replace(/\r\n/g, '\n')
+        .replace(/\r\n?/g, '\n')
         .replace(/^\d+\n/gm, '')            // remove cue index lines
         .replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2'); // comma → dot
     }
