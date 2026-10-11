@@ -447,6 +447,24 @@
             <video id="videoPlayer" controls playsinline class="w-full max-h-[420px] bg-black rounded-lg outline-none"></video>
           </div>
 
+          <div class="flex flex-wrap items-center gap-3">
+            <label for="subtitleSelect" class="text-xs text-slate-300 font-semibold">Subtitles</label>
+            <select id="subtitleSelect" aria-label="Subtitles" disabled class="bg-[#0c0b0a] text-slate-200 border border-[#2f2924] rounded-lg px-2.5 py-1.5 text-xs disabled:opacity-50">
+              <option value="off">Off</option>
+            </select>
+            <label for="playbackRateSelect" class="text-xs text-slate-300 font-semibold">Speed</label>
+            <select id="playbackRateSelect" aria-label="Playback speed" class="bg-[#0c0b0a] text-slate-200 border border-[#2f2924] rounded-lg px-2.5 py-1.5 text-xs">
+              <option value="0.5">0.5×</option>
+              <option value="0.75">0.75×</option>
+              <option value="1" selected>1×</option>
+              <option value="1.25">1.25×</option>
+              <option value="1.5">1.5×</option>
+              <option value="1.75">1.75×</option>
+              <option value="2">2×</option>
+            </select>
+            <span id="subtitleStatus" class="text-[11px] text-slate-500" aria-live="polite"></span>
+          </div>
+
           <div class="p-3 bg-[#0c0b0a] rounded-xl border border-[#2f2924] text-xs text-slate-400 flex items-start gap-2.5">
             <svg class="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />

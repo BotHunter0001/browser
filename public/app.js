@@ -19,6 +19,7 @@ let currentPlayback = {
   title: '',
   cookie: '',
   headers: null,
+  subtitles: [],
   isProxied: true,
   allowDirect: false,
   historyId: null,
@@ -334,6 +335,9 @@ const copyStreamText = document.getElementById('copyStreamText');
 const downloadPlayerStream = document.getElementById('downloadPlayerStream');
 const openStreamNewTab = document.getElementById('openStreamNewTab');
 const closePlayerBtn = document.getElementById('closePlayerBtn');
+const subtitleSelect = document.getElementById('subtitleSelect');
+const subtitleStatus = document.getElementById('subtitleStatus');
+const playbackRateSelect = document.getElementById('playbackRateSelect');
 
 // Gateway host info
 const sessionHostBadge = document.getElementById('sessionHostBadge');
@@ -1363,7 +1367,13 @@ async function loadStreams(id, provider = 'addon', episodeContext = null) {
 
       // Register primary mirror in the store
       const primaryIdx = mirrorStore.length;
-      mirrorStore.push({ url: primaryMirror?.resolverUrl || '', title: primaryPlayTitle, cookie: primaryMirror?.signCookie || '', headers: primaryMirror?.headers || null });
+      mirrorStore.push({
+        url: primaryMirror?.resolverUrl || '',
+        title: primaryPlayTitle,
+        cookie: primaryMirror?.signCookie || '',
+        headers: primaryMirror?.headers || null,
+        subtitles: primaryMirror?.subtitles || r.subtitles || [],
+      });
 
       return `
         <div class="release-card space-y-3">
@@ -1418,7 +1428,13 @@ async function loadStreams(id, provider = 'addon', episodeContext = null) {
                 const mDownloadHref = `/api/download?url=${encodeURIComponent(m.resolverUrl)}&filename=${mFilename}${m.signCookie ? '&cookie=' + encodeURIComponent(m.signCookie) : ''}${mHeadersParam}`;
                 const mPlayTitle = `${(activeMedia?.title || 'Video')} - ${m.label}`;
                 const mIdx = mirrorStore.length;
-                mirrorStore.push({ url: m.resolverUrl, title: mPlayTitle, cookie: m.signCookie || '', headers: m.headers || null });
+                mirrorStore.push({
+                  url: m.resolverUrl,
+                  title: mPlayTitle,
+                  cookie: m.signCookie || '',
+                  headers: m.headers || null,
+                  subtitles: m.subtitles || r.subtitles || [],
+                });
                 return `
                 <div class="p-2 rounded-lg bg-[#0c0b0a] border border-[#2f2924] flex flex-wrap items-center justify-between gap-2 text-xs">
                   <div class="flex items-center gap-2">
@@ -1500,7 +1516,76 @@ function buildProxyUrl(url, cookie, headers) {
   return proxy;
 }
 
-function playStreamSource(rawUrl, title, cookie = '', forceProxy = false, streamHeaders = null) {
+function normalizeSubtitleTracks(subtitles) {
+  let values = subtitles;
+  if (typeof values === 'string') {
+    try {
+      values = JSON.parse(values);
+    } catch {
+      values = /^https?:\/\//i.test(values.trim()) ? [{ url: values.trim() }] : [];
+    }
+  }
+  if (!Array.isArray(values)) {
+    values = values && typeof values === 'object' ? Object.values(values) : [];
+  }
+
+  return values.flatMap((entry, index) => {
+    const track = typeof entry === 'string' ? { url: entry } : entry;
+    if (!track || typeof track !== 'object') return [];
+    const rawUrl = String(
+      track.url || track.uri || track.src || track.link || track.file ||
+      track.fileUrl || track.subtitleUrl || track.subtitle || ''
+    ).trim();
+    if (!rawUrl) return [];
+    let url = rawUrl.startsWith('//') ? `https:${rawUrl}` : rawUrl;
+    try {
+      const parsed = new URL(url, window.location.href);
+      if (!['http:', 'https:'].includes(parsed.protocol)) return [];
+      url = parsed.href;
+    } catch {
+      return [];
+    }
+    const language = String(track.language || track.lang || track.srclang || '').trim();
+    const label = String(track.label || track.title || track.name || language || `Subtitle ${index + 1}`).trim();
+    const languageLabel = `${language} ${label}`.toLowerCase();
+    const isEnglish = /(^|[^a-z])(english|eng|en)(?=$|[^a-z])/.test(languageLabel);
+    const isBengali = /(^|[^a-z])(bengali|bangla|ben|bn)(?=$|[^a-z])/.test(languageLabel);
+    if (!isEnglish && !isBengali) return [];
+    const languageCode = language.match(/^[a-z]{2,3}(?:-[a-z0-9]+)?$/i)?.[0] || '';
+    return [{ url, label, languageCode: languageCode || (isEnglish ? 'en' : 'bn') }];
+  });
+}
+
+function setSubtitleTracks(subtitles) {
+  if (!subtitleSelect || !videoPlayer) return;
+  const tracks = normalizeSubtitleTracks(subtitles);
+  videoPlayer.querySelectorAll('track[data-player-subtitle]').forEach((track) => track.remove());
+  const offOption = document.createElement('option');
+  offOption.value = 'off';
+  offOption.textContent = 'Off';
+  subtitleSelect.replaceChildren(offOption);
+  subtitleSelect.disabled = tracks.length === 0;
+  if (subtitleStatus) {
+    subtitleStatus.textContent = tracks.length ? `${tracks.length} available` : 'No English or Bengali subtitles available for this source';
+  }
+
+  tracks.forEach((track, index) => {
+    const option = document.createElement('option');
+    option.value = String(index);
+    option.textContent = track.label;
+    subtitleSelect.add(option);
+    const element = document.createElement('track');
+    element.kind = 'subtitles';
+    element.label = track.label;
+    if (track.languageCode) element.srclang = track.languageCode;
+    element.src = `/api/subtitle?url=${encodeURIComponent(track.url)}`;
+    element.dataset.playerSubtitle = String(index);
+    videoPlayer.append(element);
+  });
+  subtitleSelect.value = 'off';
+}
+
+function playStreamSource(rawUrl, title, cookie = '', forceProxy = false, streamHeaders = null, subtitles = currentPlayback.subtitles) {
   if (!rawUrl) return;
 
   savePlaybackProgress();
@@ -1515,6 +1600,8 @@ function playStreamSource(rawUrl, title, cookie = '', forceProxy = false, stream
   currentPlayback.title = title;
   currentPlayback.cookie = cookie;
   currentPlayback.headers = streamHeaders;
+  currentPlayback.subtitles = subtitles || [];
+  setSubtitleTracks(currentPlayback.subtitles);
   // When forceProxy is explicitly true, always use the proxy.
   // When forceProxy is false AND allowDirect has been toggled on by the user,
   // honour direct mode — otherwise default to proxied (CORS safety net).
@@ -1637,7 +1724,7 @@ function playStreamSource(rawUrl, title, cookie = '', forceProxy = false, stream
     if (!currentPlayback.isProxied) {
       // Direct mode failed → fall back to proxy automatically
       console.warn('Direct playback failed, falling back to server-side stream proxy...');
-      playStreamSource(url, title, cookie, true, streamHeaders);
+      playStreamSource(url, title, cookie, true, streamHeaders, subtitles);
       return;
     }
     // Proxied playback failed. If we haven't already tried switching providers
@@ -1702,7 +1789,7 @@ async function autoSwitchToWorkingSource(failedUrl) {
 
     hideError();
     console.log(`Auto-switched source to provider: ${next.provider || 'unknown'}`);
-    playStreamSource(next.url, `${currentPlayback.title || activeMedia?.title || 'Video'} (${next.provider || 'alt provider'})`, next.cookie || '', true, next.headers || null);
+    playStreamSource(next.url, `${currentPlayback.title || activeMedia?.title || 'Video'} (${next.provider || 'alt provider'})`, next.cookie || '', true, next.headers || null, currentPlayback.subtitles);
   } catch (err) {
     showError('Provider switch failed: ' + err.message);
   }
@@ -1752,8 +1839,20 @@ function closeVideoPlayer() {
     videoPlayer.onerror = null;
     videoPlayer.pause();
     videoPlayer.removeAttribute('src');
+    videoPlayer.querySelectorAll('track[data-player-subtitle]').forEach((track) => track.remove());
     videoPlayer.load();
   }
+  if (subtitleSelect) {
+    const offOption = document.createElement('option');
+    offOption.value = 'off';
+    offOption.textContent = 'Off';
+    subtitleSelect.replaceChildren(offOption);
+    subtitleSelect.disabled = true;
+  }
+  if (subtitleStatus) subtitleStatus.textContent = '';
+  if (playbackRateSelect) playbackRateSelect.value = '1';
+  if (videoPlayer) videoPlayer.playbackRate = 1;
+  currentPlayback.subtitles = [];
   if (playerContainer) {
     playerContainer.classList.add('hidden');
     playerContainer.style.display = 'none';
@@ -2112,13 +2211,26 @@ streamsList?.addEventListener('click', (e) => {
   const mirror = Number.isFinite(idx) ? globalMirrorStore[idx] : null;
 
   if (action === 'play-stream' && mirror && mirror.url) {
-    playStreamSource(mirror.url, mirror.title, mirror.cookie, false, mirror.headers);
+    playStreamSource(mirror.url, mirror.title, mirror.cookie, false, mirror.headers, mirror.subtitles);
   } else if (action === 'copy-url' && mirror && mirror.url) {
     copyToClipboard(mirror.url, btn);
   }
 });
 
 closePlayerBtn.addEventListener('click', closeVideoPlayer);
+
+subtitleSelect?.addEventListener('change', () => {
+  const selected = subtitleSelect.value;
+  videoPlayer?.querySelectorAll('track[data-player-subtitle]').forEach((element) => {
+    const track = element;
+    track.track.mode = selected !== 'off' && track.dataset.playerSubtitle === selected ? 'showing' : 'disabled';
+  });
+});
+
+playbackRateSelect?.addEventListener('change', () => {
+  const rate = Number(playbackRateSelect.value);
+  if (videoPlayer && Number.isFinite(rate) && rate > 0) videoPlayer.playbackRate = rate;
+});
 
 // Player mode toggle
 toggleProxyBtn?.addEventListener('click', toggleStreamMode);
