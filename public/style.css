@@ -387,3 +387,110 @@ button:active {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+@media (max-width: 640px) {
+  header > div {
+    gap: 0.35rem;
+  }
+
+  .nav-button {
+    min-width: 2.25rem;
+    min-height: 2.5rem;
+    padding: 0.45rem 0.55rem;
+    border-radius: 0.75rem;
+  }
+
+  #topChannelsBar {
+    gap: 0.5rem;
+  }
+
+  #resultsTitle {
+    font-size: 1.05rem;
+    line-height: 1.35;
+  }
+
+  #resultsCount {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
+  #detailsModal > div {
+    max-height: calc(100dvh - 1rem);
+    border-radius: 1rem;
+  }
+
+  #detailsModal > div > :first-child {
+    padding: 0.75rem 1rem;
+  }
+
+  #detailsModal > div > :nth-child(2) {
+    padding: 0.75rem;
+    gap: 1rem;
+  }
+
+  #detailsModal h2 {
+    overflow-wrap: anywhere;
+  }
+
+  #seriesHierarchySection > div:first-child {
+    align-items: flex-start;
+  }
+
+  #seriesHierarchySection > div:first-child > div {
+    flex-wrap: wrap;
+    gap: 0.5rem 0.75rem;
+  }
+
+  #playerContainer > div:first-child > div:last-child {
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+
+  #playerContainer > div:first-child > div:last-child > * {
+    min-height: 2.25rem;
+  }
+
+  .video-player-container video {
+    width: 100%;
+    max-height: min(56vh, 420px);
+    aspect-ratio: 16 / 9;
+  }
+
+  #subtitleSelect,
+  #playbackRateSelect {
+    min-height: 2.25rem;
+  }
+
+  .release-card {
+    padding: 0.75rem;
+  }
+
+  .release-card > div:first-child > div:last-child {
+    flex-wrap: wrap;
+  }
+
+  #providersModal > div > :first-child,
+  #libraryModal > div > :first-child {
+    padding: 0.75rem;
+  }
+
+  #providersModal > div > :last-child {
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 0.75rem;
+  }
+}
+
+@media (max-width: 360px) {
+  #brandHomeBtn > div:last-child {
+    display: none;
+  }
+
+  #resultsContainer > div:first-child > div:first-child {
+    gap: 0.5rem;
+  }
+
+  .media-detail-overview {
+    padding: 0.75rem;
+  }
+}
