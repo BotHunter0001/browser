@@ -445,6 +445,10 @@
 
           <div class="video-player-container" id="videoPlayerContainer">
             <video id="videoPlayer" playsinline tabindex="0" aria-label="Video player"></video>
+            <div id="playerLoading" class="player-loading hidden" role="status" aria-live="polite">
+              <span class="player-loading-spinner" aria-hidden="true"></span>
+              <span id="playerLoadingText">Loading stream...</span>
+            </div>
             <div class="player-controls" id="playerControls">
               <input id="playerSeek" class="player-seek" type="range" min="0" max="1000" value="0" aria-label="Seek">
               <div class="player-control-row">

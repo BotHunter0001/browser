@@ -303,6 +303,38 @@ a:focus-visible {
   background: #000;
 }
 
+.player-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.7rem;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.48);
+  font-size: 0.8rem;
+  pointer-events: none;
+}
+
+.player-loading.hidden {
+  display: none;
+}
+
+.player-loading-spinner {
+  width: 1.35rem;
+  height: 1.35rem;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #facc15;
+  border-radius: 50%;
+  animation: player-loading-spin 700ms linear infinite;
+}
+
+@keyframes player-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .player-controls {
   position: absolute;
   inset: auto 0 0;

@@ -339,6 +339,8 @@ const subtitleSelect = document.getElementById('subtitleSelect');
 const subtitleStatus = document.getElementById('subtitleStatus');
 const playbackRateSelect = document.getElementById('playbackRateSelect');
 const videoPlayerContainer = document.getElementById('videoPlayerContainer');
+const playerLoading = document.getElementById('playerLoading');
+const playerLoadingText = document.getElementById('playerLoadingText');
 const playerSeek = document.getElementById('playerSeek');
 const playerCurrentTime = document.getElementById('playerCurrentTime');
 const playerDuration = document.getElementById('playerDuration');
@@ -358,6 +360,12 @@ const playerFullscreenBtn = document.getElementById('playerFullscreenBtn');
 const playerFullscreenIcon = document.getElementById('playerFullscreenIcon');
 const playerExitFullscreenIcon = document.getElementById('playerExitFullscreenIcon');
 let playerControlsTimeout = null;
+
+function setPlayerLoading(loading, message = 'Loading stream...') {
+  if (!playerLoading) return;
+  playerLoading.classList.toggle('hidden', !loading);
+  if (loading && playerLoadingText) playerLoadingText.textContent = message;
+}
 
 function formatPlayerTime(seconds) {
   if (!Number.isFinite(seconds) || seconds < 0) return '0:00';
@@ -448,6 +456,12 @@ videoPlayer?.addEventListener('pause', () => {
 });
 videoPlayer?.addEventListener('ended', updatePlayerControls);
 videoPlayer?.addEventListener('volumechange', updatePlayerControls);
+videoPlayer?.addEventListener('loadstart', () => setPlayerLoading(true));
+videoPlayer?.addEventListener('waiting', () => setPlayerLoading(true, 'Buffering...'));
+videoPlayer?.addEventListener('stalled', () => setPlayerLoading(true, 'Stream stalled; waiting for data...'));
+videoPlayer?.addEventListener('canplay', () => setPlayerLoading(false));
+videoPlayer?.addEventListener('playing', () => setPlayerLoading(false));
+videoPlayer?.addEventListener('error', () => setPlayerLoading(false));
 document.addEventListener('fullscreenchange', updatePlayerControls);
 document.addEventListener('fullscreenchange', () => {
   if (!document.fullscreenElement && typeof window.screen.orientation?.unlock === 'function') {
@@ -544,13 +558,6 @@ playerFullscreenBtn?.addEventListener('click', async () => {
 
 videoPlayerContainer?.addEventListener('pointermove', showPlayerControls);
 videoPlayerContainer?.addEventListener('pointerdown', showPlayerControls);
-videoPlayer?.addEventListener('click', () => {
-  if (!videoPlayer.paused && !videoPlayer.ended) {
-    videoPlayer.pause();
-  } else {
-    videoPlayer.play().catch((error) => console.warn('Playback could not start:', error?.name));
-  }
-});
 
 videoPlayerContainer?.addEventListener('keydown', (event) => {
   if (event.target !== videoPlayer) return;
@@ -1865,6 +1872,7 @@ function playStreamSource(rawUrl, title, cookie = '', forceProxy = false, stream
   playerContainer.classList.remove('hidden');
   playerContainer.style.display = 'block';
   playerContainer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  setPlayerLoading(true);
 
   // ── HLS / M3U8 branch ────────────────────────────────────────────────────
   // Route through /api/proxy-hls so relative segment URLs are rewritten and
@@ -1911,6 +1919,7 @@ function playStreamSource(rawUrl, title, cookie = '', forceProxy = false, stream
       videoPlayer.play().catch((e) => console.warn('Native HLS play() blocked:', e?.name));
     } else {
       // No HLS support at all — fall back to opening externally
+      setPlayerLoading(false);
       window.open(url, '_blank');
     }
 
@@ -2076,6 +2085,7 @@ function closeVideoPlayer() {
     videoPlayer.querySelectorAll('track[data-player-subtitle]').forEach((track) => track.remove());
     videoPlayer.load();
   }
+  setPlayerLoading(false);
   if (subtitleSelect) {
     const offOption = document.createElement('option');
     offOption.value = 'off';
