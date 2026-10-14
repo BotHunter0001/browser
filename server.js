@@ -10,16 +10,37 @@ const streamsCache = new TTLCache({ ttlMs: 3 * 60 * 1000, max: 300 });
 const catalogCache = new TTLCache({ ttlMs: 15 * 60 * 1000, max: 200 });
 
 const app = express();
-// Read port/host from environment (falls back to defaults via .env-style usage)
+// Read port/host from environment. The default binding is localhost intentionally;
+// remote exposure must be configured explicitly.
 const PORT = parseInt(process.env.PORT, 10) || 3000;
-// Default to 0.0.0.0 to allow container and preview access
-const HOST = process.env.HOST || '0.0.0.0';
+const HOST = process.env.HOST || '127.0.0.1';
+
+const csp = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
+  "form-action 'self'",
+  "img-src 'self' data: blob: https: http:",
+  "media-src 'self' data: blob: https: http:",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' data: https://fonts.gstatic.com",
+  "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
+  "connect-src 'self' https: http: data: blob:",
+  "worker-src 'self' blob:",
+  "manifest-src 'self'",
+  "upgrade-insecure-requests",
+].join('; ');
 
 app.disable('x-powered-by');
 app.use(express.json({ limit: '100kb' }));
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Content-Security-Policy', csp);
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '0');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
@@ -69,15 +90,30 @@ app.get('/api/health', (req, res) => {
   res.json({ ok: true });
 });
 
-// Session info stub — returns active provider count for the header badge
+// Session metadata is intentionally minimal: there is no real authenticated
+// gateway/session system in this project. Expose the supported state accurately
+// instead of advertising a fake token or host rotation capability.
 app.get('/api/session', (req, res) => {
   const activeCount = Object.values(require('./providers').registry).filter(p => !p.disabled).length;
-  res.json({ ok: true, currentHost: null, providers: activeCount, tokenPreview: `${activeCount} providers` });
+  res.json({
+    ok: true,
+    currentHost: null,
+    providers: activeCount,
+    tokenPreview: null,
+    gatewayStatus: 'unsupported',
+    note: 'No authenticated gateway session is configured for this instance.'
+  });
 });
 
-// Gateway rotate stub — no-op for now, returns ok
+// Host rotation is unsupported by the current app and should not masquerade as a
+// real network rotation feature. Returning a clear unsupported response avoids
+// misleading front-end or operators into believing rotation is functional.
 app.post('/api/hosts/rotate', (req, res) => {
-  res.json({ ok: true });
+  res.status(501).json({
+    ok: false,
+    error: 'Host rotation is not implemented for this deployment.',
+    gatewayStatus: 'unsupported'
+  });
 });
 
 // 2. Providers list endpoint
@@ -435,6 +471,12 @@ async function fetchMediaUpstream(targetUrl, req, signal) {
 
 function redirectToDirect(res, targetUrl) {
   if (!/^https?:\/\//i.test(String(targetUrl))) return false;
+  try {
+    const validated = new URL(String(targetUrl));
+    if (!['http:', 'https:'].includes(validated.protocol)) return false;
+  } catch {
+    return false;
+  }
   res.setHeader('Cache-Control', 'no-store');
   res.redirect(302, targetUrl);
   return true;
@@ -442,9 +484,19 @@ function redirectToDirect(res, targetUrl) {
 
 // Abort the upstream fetch when the client disconnects (video seeking / closing player)
 function wireClientAbort(req, res, controller) {
-  const abort = () => controller.abort();
+  const abort = () => {
+    if (!controller.signal.aborted) controller.abort();
+  };
   req.on('close', abort);
-  res.on('finish', () => req.off('close', abort));
+  res.on('finish', () => {
+    req.off('close', abort);
+    if (controller.signal.aborted) return;
+    controller.abort();
+  });
+  res.on('close', () => {
+    req.off('close', abort);
+    if (!controller.signal.aborted) controller.abort();
+  });
 }
 
 // 6. Direct Video Streaming Proxy (Range request support for smooth browser playback)
@@ -786,8 +838,13 @@ const server = app.listen(PORT, HOST, () => {
 });
 server.requestTimeout = 0; // long video streams must not be cut off
 server.headersTimeout = 30000;
+server.keepAliveTimeout = 15000;
+server.maxHeadersCount = 20;
 
 process.on('unhandledRejection', (err) => console.error('[Unhandled Rejection]', err));
-const shutdown = () => server.close(() => process.exit(0));
+const shutdown = () => {
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(1), 10000).unref();
+};
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);

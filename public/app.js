@@ -2291,15 +2291,19 @@ async function loadMoreResults() {
 
 /**
  * Fetch Session & Gateway Status
+ * This app does not implement an authenticated gateway/session; reflect that
+ * honestly instead of pretending to manage a rotating host or token.
  */
 async function fetchSessionStatus() {
   try {
     const res = await fetch('/api/session');
     if (res.ok) {
       const data = await res.json();
-      if (data.currentHost && sessionHostBadge) {
-        const u = new URL(data.currentHost);
-        sessionHostBadge.textContent = `${u.hostname} (${data.tokenPreview || 'Auth OK'})`;
+      if (sessionHostBadge) {
+        const gatewayState = data.gatewayStatus === 'unsupported'
+          ? 'Gateway unsupported'
+          : (data.currentHost ? new URL(data.currentHost).hostname : 'Gateway offline');
+        sessionHostBadge.textContent = gatewayState;
       }
     }
   } catch {
@@ -2311,14 +2315,17 @@ async function handleRotateHost() {
   try {
     if (rotateHostBtn) rotateHostBtn.disabled = true;
     const res = await fetch('/api/hosts/rotate', { method: 'POST' });
-    if (res.ok) {
-      await fetchSessionStatus();
-      if (searchInput.value.trim()) {
-        handleSearch(searchInput.value.trim());
-      }
+    if (!res.ok) {
+      if (sessionHostBadge) sessionHostBadge.textContent = 'Gateway unsupported';
+      return;
+    }
+    await fetchSessionStatus();
+    if (searchInput.value.trim()) {
+      handleSearch(searchInput.value.trim());
     }
   } catch (err) {
     console.error(err);
+    if (sessionHostBadge) sessionHostBadge.textContent = 'Gateway offline';
   } finally {
     if (rotateHostBtn) rotateHostBtn.disabled = false;
   }
