@@ -338,6 +338,226 @@ const closePlayerBtn = document.getElementById('closePlayerBtn');
 const subtitleSelect = document.getElementById('subtitleSelect');
 const subtitleStatus = document.getElementById('subtitleStatus');
 const playbackRateSelect = document.getElementById('playbackRateSelect');
+const videoPlayerContainer = document.getElementById('videoPlayerContainer');
+const playerSeek = document.getElementById('playerSeek');
+const playerCurrentTime = document.getElementById('playerCurrentTime');
+const playerDuration = document.getElementById('playerDuration');
+const playerPlayBtn = document.getElementById('playerPlayBtn');
+const playerPlayIcon = document.getElementById('playerPlayIcon');
+const playerPauseIcon = document.getElementById('playerPauseIcon');
+const playerMuteBtn = document.getElementById('playerMuteBtn');
+const playerVolumeIcon = document.getElementById('playerVolumeIcon');
+const playerMutedIcon = document.getElementById('playerMutedIcon');
+const playerBackBtn = document.getElementById('playerBackBtn');
+const playerForwardBtn = document.getElementById('playerForwardBtn');
+const playerCaptionsBtn = document.getElementById('playerCaptionsBtn');
+const playerSettingsBtn = document.getElementById('playerSettingsBtn');
+const playerSettingsMenu = document.getElementById('playerSettingsMenu');
+const playerPipBtn = document.getElementById('playerPipBtn');
+const playerFullscreenBtn = document.getElementById('playerFullscreenBtn');
+const playerFullscreenIcon = document.getElementById('playerFullscreenIcon');
+const playerExitFullscreenIcon = document.getElementById('playerExitFullscreenIcon');
+let playerControlsTimeout = null;
+
+function formatPlayerTime(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return '0:00';
+  const wholeSeconds = Math.floor(seconds);
+  const hours = Math.floor(wholeSeconds / 3600);
+  const minutes = Math.floor((wholeSeconds % 3600) / 60);
+  const remainder = wholeSeconds % 60;
+  return hours
+    ? `${hours}:${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`
+    : `${minutes}:${String(remainder).padStart(2, '0')}`;
+}
+
+function updatePlayerControls() {
+  if (!videoPlayer) return;
+  const duration = videoPlayer.duration;
+  const hasDuration = Number.isFinite(duration) && duration > 0;
+  const progress = hasDuration ? (videoPlayer.currentTime / duration) * 100 : 0;
+
+  if (playerCurrentTime) playerCurrentTime.textContent = formatPlayerTime(videoPlayer.currentTime);
+  if (playerDuration) playerDuration.textContent = formatPlayerTime(duration);
+  if (playerSeek) {
+    playerSeek.disabled = !hasDuration;
+    playerSeek.value = String(Math.round(progress * 10));
+    playerSeek.style.setProperty('--seek-progress', `${progress}%`);
+  }
+
+  const playing = !videoPlayer.paused && !videoPlayer.ended;
+  playerPlayIcon?.classList.toggle('hidden', playing);
+  playerPauseIcon?.classList.toggle('hidden', !playing);
+  if (playerPlayBtn) {
+    playerPlayBtn.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+    playerPlayBtn.title = playing ? 'Pause' : 'Play';
+  }
+
+  const muted = videoPlayer.muted || videoPlayer.volume === 0;
+  playerVolumeIcon?.classList.toggle('hidden', muted);
+  playerMutedIcon?.classList.toggle('hidden', !muted);
+  if (playerMuteBtn) {
+    playerMuteBtn.setAttribute('aria-label', muted ? 'Unmute' : 'Mute');
+    playerMuteBtn.title = muted ? 'Unmute' : 'Mute';
+  }
+
+  const isFullscreen = document.fullscreenElement === videoPlayerContainer;
+  playerFullscreenIcon?.classList.toggle('hidden', isFullscreen);
+  playerExitFullscreenIcon?.classList.toggle('hidden', !isFullscreen);
+  if (playerFullscreenBtn) {
+    playerFullscreenBtn.setAttribute('aria-label', isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen');
+    playerFullscreenBtn.title = isFullscreen ? 'Exit fullscreen' : 'Fullscreen';
+  }
+
+  const captionsEnabled = Boolean(subtitleSelect && subtitleSelect.value !== 'off' && !subtitleSelect.disabled);
+  playerCaptionsBtn?.classList.toggle('active', captionsEnabled);
+  if (playerCaptionsBtn) playerCaptionsBtn.disabled = !subtitleSelect || subtitleSelect.disabled || subtitleSelect.options.length < 2;
+  if (playerPipBtn) {
+    playerPipBtn.disabled = !document.pictureInPictureEnabled || typeof videoPlayer.requestPictureInPicture !== 'function';
+  }
+}
+
+function showPlayerControls() {
+  if (!videoPlayerContainer) return;
+  videoPlayerContainer.classList.remove('controls-hidden');
+  if (playerControlsTimeout) clearTimeout(playerControlsTimeout);
+  if (!videoPlayer?.paused && !videoPlayer?.ended) {
+    playerControlsTimeout = setTimeout(() => {
+      if (!playerSettingsMenu?.classList.contains('hidden')) return;
+      videoPlayerContainer.classList.add('controls-hidden');
+    }, 2600);
+  }
+}
+
+function setSelectedSubtitle(value) {
+  if (!subtitleSelect || subtitleSelect.disabled) return;
+  subtitleSelect.value = value;
+  subtitleSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
+}
+
+videoPlayer?.addEventListener('loadedmetadata', updatePlayerControls);
+videoPlayer?.addEventListener('durationchange', updatePlayerControls);
+videoPlayer?.addEventListener('timeupdate', updatePlayerControls);
+videoPlayer?.addEventListener('play', () => {
+  updatePlayerControls();
+  showPlayerControls();
+});
+videoPlayer?.addEventListener('pause', () => {
+  updatePlayerControls();
+  showPlayerControls();
+});
+videoPlayer?.addEventListener('ended', updatePlayerControls);
+videoPlayer?.addEventListener('volumechange', updatePlayerControls);
+document.addEventListener('fullscreenchange', updatePlayerControls);
+
+playerPlayBtn?.addEventListener('click', () => {
+  if (!videoPlayer) return;
+  if (videoPlayer.paused || videoPlayer.ended) {
+    videoPlayer.play().catch((error) => console.warn('Playback could not start:', error?.name));
+  } else {
+    videoPlayer.pause();
+  }
+});
+
+playerMuteBtn?.addEventListener('click', () => {
+  if (videoPlayer) videoPlayer.muted = !videoPlayer.muted;
+});
+
+playerBackBtn?.addEventListener('click', () => {
+  if (videoPlayer && Number.isFinite(videoPlayer.currentTime)) {
+    videoPlayer.currentTime = Math.max(0, videoPlayer.currentTime - 10);
+  }
+});
+
+playerForwardBtn?.addEventListener('click', () => {
+  if (videoPlayer && Number.isFinite(videoPlayer.currentTime)) {
+    const end = Number.isFinite(videoPlayer.duration) ? videoPlayer.duration : Infinity;
+    videoPlayer.currentTime = Math.min(end, videoPlayer.currentTime + 10);
+  }
+});
+
+playerSeek?.addEventListener('input', () => {
+  if (!videoPlayer || !Number.isFinite(videoPlayer.duration) || videoPlayer.duration <= 0) return;
+  const progress = Number(playerSeek.value) / 1000;
+  videoPlayer.currentTime = Math.max(0, Math.min(videoPlayer.duration, progress * videoPlayer.duration));
+});
+
+playerCaptionsBtn?.addEventListener('click', () => {
+  if (!subtitleSelect || subtitleSelect.disabled || subtitleSelect.options.length < 2) return;
+  setSelectedSubtitle(subtitleSelect.value === 'off' ? subtitleSelect.options[1].value : 'off');
+});
+
+playerSettingsBtn?.addEventListener('click', () => {
+  if (!playerSettingsMenu) return;
+  const isOpening = playerSettingsMenu.classList.contains('hidden');
+  playerSettingsMenu.classList.toggle('hidden', !isOpening);
+  playerSettingsBtn.setAttribute('aria-expanded', String(isOpening));
+  showPlayerControls();
+});
+
+document.addEventListener('click', (event) => {
+  if (!playerSettingsMenu || !playerSettingsBtn || playerSettingsMenu.classList.contains('hidden')) return;
+  if (playerSettingsMenu.contains(event.target) || playerSettingsBtn.contains(event.target)) return;
+  playerSettingsMenu.classList.add('hidden');
+  playerSettingsBtn.setAttribute('aria-expanded', 'false');
+});
+
+playerPipBtn?.addEventListener('click', async () => {
+  if (!videoPlayer || !document.pictureInPictureEnabled || typeof videoPlayer.requestPictureInPicture !== 'function') return;
+  try {
+    if (document.pictureInPictureElement === videoPlayer) {
+      await document.exitPictureInPicture();
+    } else {
+      await videoPlayer.requestPictureInPicture();
+    }
+  } catch (error) {
+    console.warn('Picture-in-picture could not be toggled:', error?.name);
+  }
+});
+
+playerFullscreenBtn?.addEventListener('click', async () => {
+  if (!videoPlayerContainer) return;
+  try {
+    if (document.fullscreenElement) {
+      await document.exitFullscreen();
+    } else if (videoPlayerContainer.requestFullscreen) {
+      await videoPlayerContainer.requestFullscreen();
+    } else if (videoPlayer?.webkitEnterFullscreen) {
+      videoPlayer.webkitEnterFullscreen();
+    }
+  } catch (error) {
+    console.warn('Fullscreen could not be toggled:', error?.name);
+  }
+});
+
+videoPlayerContainer?.addEventListener('pointermove', showPlayerControls);
+videoPlayerContainer?.addEventListener('pointerdown', showPlayerControls);
+videoPlayer?.addEventListener('click', () => {
+  if (!videoPlayer.paused && !videoPlayer.ended) {
+    videoPlayer.pause();
+  } else {
+    videoPlayer.play().catch((error) => console.warn('Playback could not start:', error?.name));
+  }
+});
+
+videoPlayerContainer?.addEventListener('keydown', (event) => {
+  if (event.target !== videoPlayer) return;
+  let seekBy = 0;
+  if (event.key === 'ArrowLeft') seekBy = -10;
+  if (event.key === 'ArrowRight') seekBy = 10;
+  if (seekBy && Number.isFinite(videoPlayer.duration)) {
+    event.preventDefault();
+    videoPlayer.currentTime = Math.max(0, Math.min(videoPlayer.duration, videoPlayer.currentTime + seekBy));
+  } else if (event.key === ' ' || event.key.toLowerCase() === 'k') {
+    event.preventDefault();
+    playerPlayBtn?.click();
+  } else if (event.key.toLowerCase() === 'm') {
+    event.preventDefault();
+    playerMuteBtn?.click();
+  } else if (event.key.toLowerCase() === 'f') {
+    event.preventDefault();
+    playerFullscreenBtn?.click();
+  }
+});
 
 // Gateway host info
 const sessionHostBadge = document.getElementById('sessionHostBadge');
@@ -1583,6 +1803,7 @@ function setSubtitleTracks(subtitles) {
     videoPlayer.append(element);
   });
   subtitleSelect.value = 'off';
+  updatePlayerControls();
 }
 
 function playStreamSource(rawUrl, title, cookie = '', forceProxy = false, streamHeaders = null, subtitles = currentPlayback.subtitles) {
@@ -2225,6 +2446,7 @@ subtitleSelect?.addEventListener('change', () => {
     const track = element;
     track.track.mode = selected !== 'off' && track.dataset.playerSubtitle === selected ? 'showing' : 'disabled';
   });
+  updatePlayerControls();
 });
 
 playbackRateSelect?.addEventListener('change', () => {
