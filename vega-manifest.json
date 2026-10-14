@@ -2,7 +2,7 @@
   {
     "display_name": "VMovies",
     "value": "vega",
-    "version": "2.45",
+    "version": "2.46",
     "icon": "https://cdn.jsdelivr.net/gh/Zenda-Cross/vega-providers@main/assets/vega.png",
     "type": "global",
     "disabled": false,
@@ -11,10 +11,11 @@
   {
     "display_name": "MultiStream",
     "value": "autoEmbed",
-    "version": "3.1",
+    "version": "3.5",
     "icon": "https://cdn.jsdelivr.net/gh/Zenda-Cross/vega-providers@main/assets/autoEmbed.png",
     "type": "global",
-    "disabled": false
+    "disabled": false,
+    "hasSettings": true
   },
   {
     "display_name": "MoviesDrive",
@@ -28,8 +29,8 @@
   {
     "display_name": "MultiMovies",
     "value": "multi",
-    "version": "1.4",
-    "icon": "",
+    "version": "1.5",
+    "icon": "https://cdn.jsdelivr.net/gh/Zenda-Cross/vega-providers@main/assets/multi.png",
     "type": "global",
     "disabled": true
   },
@@ -71,7 +72,7 @@
   {
     "display_name": "MoviesMod",
     "value": "mod",
-    "version": "1.7",
+    "version": "2.0",
     "icon": "https://cdn.jsdelivr.net/gh/Zenda-Cross/vega-providers@main/assets/mod.png",
     "type": "global",
     "disabled": false
@@ -79,7 +80,7 @@
   {
     "display_name": "UHDMovies",
     "value": "uhd",
-    "version": "1.8",
+    "version": "2.1",
     "icon": "https://cdn.jsdelivr.net/gh/Zenda-Cross/vega-providers@main/assets/uhd.webp",
     "type": "global",
     "disabled": false
@@ -190,7 +191,7 @@
   {
     "display_name": "NetflixMirror",
     "value": "netflixMirror",
-    "version": "2.9",
+    "version": "2.11",
     "icon": "https://cdn.jsdelivr.net/gh/Zenda-Cross/vega-providers@main/assets/netflixMirror.webp",
     "type": "global",
     "disabled": false,
@@ -199,7 +200,7 @@
   {
     "display_name": "PrimeMirror",
     "value": "primeMirror",
-    "version": "2.8",
+    "version": "2.10",
     "icon": "https://cdn.jsdelivr.net/gh/Zenda-Cross/vega-providers@main/assets/primeMirror.webp",
     "type": "global",
     "disabled": false,
@@ -208,7 +209,7 @@
   {
     "display_name": "DisneyMirror",
     "value": "disneyMirror",
-    "version": "2.0",
+    "version": "2.2",
     "icon": "https://cdn.jsdelivr.net/gh/Zenda-Cross/vega-providers@main/assets/disneyMirror.webp",
     "type": "global",
     "disabled": false,
@@ -348,10 +349,11 @@
   {
     "display_name": "TopMovies",
     "value": "topmovies",
-    "version": "1.16",
+    "version": "1.17",
     "icon": "https://cdn.jsdelivr.net/gh/Zenda-Cross/vega-providers@main/assets/topmovies.png",
     "type": "india",
-    "disabled": false
+    "disabled": false,
+    "hasSettings": true
   },
   {
     "display_name": "GuardaHD",
@@ -390,7 +392,7 @@
   {
     "display_name": "Torrentio",
     "value": "torrentio",
-    "version": "1.20",
+    "version": "1.21",
     "icon": "https://cdn.jsdelivr.net/gh/Zenda-Cross/vega-providers@main/assets/torrentio.png",
     "type": "global",
     "disabled": false,
@@ -409,7 +411,7 @@
     "icon": "https://cdn.jsdelivr.net/gh/Zenda-Cross/vega-providers@main/assets/anikoto.png",
     "display_name": "Anikoto",
     "value": "anikoto",
-    "version": "2.0",
+    "version": "2.1",
     "type": "anime",
     "disabled": false
   },
@@ -417,7 +419,7 @@
     "icon": "https://cdn.jsdelivr.net/gh/Zenda-Cross/vega-providers@main/assets/kickAssAnime.png",
     "display_name": "KickAssAnime",
     "value": "kickAssAnime",
-    "version": "1.4",
+    "version": "1.5",
     "type": "anime",
     "disabled": false
   },
@@ -482,9 +484,26 @@
   {
     "display_name": "YouTube",
     "value": "youtube",
-    "version": "1.2",
+    "version": "1.4",
     "icon": "https://cdn.jsdelivr.net/gh/Zenda-Cross/vega-providers@main/assets/youtube.png",
     "type": "global",
+    "disabled": false,
+    "hasSettings": true
+  },
+  {
+    "display_name": "DramaCool",
+    "value": "dramacool",
+    "version": "1.3",
+    "icon": "https://cdn.jsdelivr.net/gh/Zenda-Cross/vega-providers@main/assets/dramacool.png",
+    "type": "global",
+    "disabled": false
+  },
+  {
+    "display_name": "AnimeSub+",
+    "value": "animesub",
+    "version": "1.5",
+    "icon": "https://animesub.duckdns.org/assets/logo.png",
+    "type": "anime",
     "disabled": false,
     "hasSettings": true
   }
