@@ -401,6 +401,7 @@ function updatePlayerControls() {
   }
 
   const isFullscreen = document.fullscreenElement === videoPlayerContainer;
+  videoPlayerContainer?.classList.toggle('is-fullscreen', isFullscreen);
   playerFullscreenIcon?.classList.toggle('hidden', isFullscreen);
   playerExitFullscreenIcon?.classList.toggle('hidden', !isFullscreen);
   if (playerFullscreenBtn) {
@@ -448,6 +449,11 @@ videoPlayer?.addEventListener('pause', () => {
 videoPlayer?.addEventListener('ended', updatePlayerControls);
 videoPlayer?.addEventListener('volumechange', updatePlayerControls);
 document.addEventListener('fullscreenchange', updatePlayerControls);
+document.addEventListener('fullscreenchange', () => {
+  if (!document.fullscreenElement && typeof window.screen.orientation?.unlock === 'function') {
+    window.screen.orientation.unlock();
+  }
+});
 
 playerPlayBtn?.addEventListener('click', () => {
   if (!videoPlayer) return;
@@ -521,6 +527,13 @@ playerFullscreenBtn?.addEventListener('click', async () => {
       await document.exitFullscreen();
     } else if (videoPlayerContainer.requestFullscreen) {
       await videoPlayerContainer.requestFullscreen();
+      if (typeof window.screen.orientation?.lock === 'function') {
+        try {
+          await window.screen.orientation.lock('landscape');
+        } catch (error) {
+          console.warn('Landscape orientation could not be locked:', error?.name);
+        }
+      }
     } else if (videoPlayer?.webkitEnterFullscreen) {
       videoPlayer.webkitEnterFullscreen();
     }

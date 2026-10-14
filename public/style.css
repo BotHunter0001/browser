@@ -785,3 +785,34 @@ button:active {
     padding: 0.75rem;
   }
 }
+
+@media (max-width: 640px) {
+  .video-player-container:not(.is-fullscreen) .player-controls {
+    padding: 1.1rem 0.65rem 0.4rem;
+  }
+
+  .video-player-container:not(.is-fullscreen) .player-control-actions > .player-control-btn:not(#playerFullscreenBtn) {
+    display: none;
+  }
+
+  .video-player-container:not(.is-fullscreen) .player-time {
+    display: inline;
+  }
+
+  .video-player-container:not(.is-fullscreen) .player-seek::-webkit-slider-thumb,
+  .video-player-container:not(.is-fullscreen) .player-seek::-moz-range-thumb {
+    opacity: 1;
+  }
+
+  .video-player-container:not(.is-fullscreen) .player-control-row {
+    flex-wrap: nowrap;
+    gap: 0.5rem;
+  }
+
+  .video-player-container:not(.is-fullscreen) .player-control-actions {
+    flex: 0 0 auto;
+    justify-content: flex-end;
+    margin-left: auto;
+    gap: 0;
+  }
+}
