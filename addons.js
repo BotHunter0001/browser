@@ -24,13 +24,9 @@ class AddonProvider {
       const results = [];
 
       for (const cat of catalogs) {
-        // B1 fix: `cat.type !== 'movie' || 'series'` is always truthy because
-        // `'series'` is a non-empty string. The correct guard checks both types.
         const typeSupported = cat.type === 'movie' || cat.type === 'series';
         const hasSearchExtra = Array.isArray(cat.extra) && cat.extra.some(e => e.name === 'search');
-        if (!hasSearchExtra && !typeSupported) {
-          continue;
-        }
+        if (!typeSupported || !hasSearchExtra) continue;
 
         const url = `${this.base}/catalog/${cat.type}/${cat.id}.json?search=${encodeURIComponent(query)}`;
         try {

@@ -1726,11 +1726,10 @@ async function loadStreams(id, provider = 'addon', episodeContext = null) {
     globalMirrorStore = mirrorStore;
   } catch (err) {
     streamsLoading.classList.add('hidden');
-    streamsList.innerHTML = `
-      <div class="p-4 bg-red-950/40 rounded-xl border border-red-800 text-red-300 text-xs">
-        Failed to fetch streaming sources: ${err.message}
-      </div>
-    `;
+    const error = document.createElement('div');
+    error.className = 'p-4 bg-red-950/40 rounded-xl border border-red-800 text-red-300 text-xs';
+    error.textContent = `Failed to fetch streaming sources: ${err.message}`;
+    streamsList.replaceChildren(error);
   }
 }
 

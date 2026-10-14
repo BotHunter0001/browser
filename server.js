@@ -58,6 +58,9 @@ function sendError(res, status, publicMsg, err) {
   console.error(`[${publicMsg}]`, err?.message || err);
   if (!res.headersSent) res.status(status).json({ error: publicMsg });
 }
+function buildStreamsCacheKey({ provider, id, title, year, type, minSources, alternateSources = [] }) {
+  return JSON.stringify([provider, id, title, year, type, minSources, alternateSources]);
+}
 app.use('/api/search', rateLimit(60, 60000));
 app.use(['/api/streams', '/api/resolve-source', '/api/episode-streams'], rateLimit(40, 60000));
 
@@ -326,7 +329,7 @@ app.get('/api/streams/:id', async (req, res) => {
   }
 
   try {
-    const cacheKey = `${provider}::${id}::${title}::${minSources}`;
+    const cacheKey = buildStreamsCacheKey({ provider, id, title, year, type, minSources, alternateSources });
     const releases = await streamsCache.wrap(cacheKey, () =>
       getStreams(id, provider, { minSources, maxFallbacks, title, year, type, alternateSources })
     );
@@ -509,7 +512,8 @@ app.get('/api/play/:id', async (req, res) => {
   const year = req.query.year ? Number(req.query.year) : null;
   const type = String(req.query.type || 'movie').trim().slice(0, 20);
   try {
-    const releases = await streamsCache.wrap(`${provider}::${id}::${title}`, () =>
+    const cacheKey = buildStreamsCacheKey({ provider, id, title, year, type, minSources: 1 });
+    const releases = await streamsCache.wrap(cacheKey, () =>
       getStreams(id, provider, { minSources: 1, title, year, type })
     );
     res.json({ subjectId: id, provider, releases });

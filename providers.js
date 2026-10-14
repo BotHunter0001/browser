@@ -587,6 +587,7 @@ async function getStreams(id, providerName = 'movieBoxWeb', opts = {}) {
         provider: r.provider || registry[name]?.displayName || name,
       }));
 
+  const timeoutMs = Number.isInteger(opts.timeoutMs) ? Math.max(1000, opts.timeoutMs) : 30000;
   const tried = new Set([providerName]);
   const results = [];
 
@@ -594,7 +595,7 @@ async function getStreams(id, providerName = 'movieBoxWeb', opts = {}) {
   const entry = registry[providerName];
   const p = entry?.instance || registry.movieBoxWeb?.instance || registry.addon.instance;
   try {
-    const releases = collect(await withTimeout(p.streams(id), opts.timeoutMs || 10000, `streams(${providerName}) timed out`), providerName);
+    const releases = collect(await withTimeout(p.streams(id), timeoutMs, `streams(${providerName}) timed out`), providerName);
     results.push(...releases);
   } catch (err) {
     console.warn(`[getStreams] Primary provider ${providerName} failed for id ${id}: ${err.message}. Switching to another provider...`);
@@ -602,7 +603,6 @@ async function getStreams(id, providerName = 'movieBoxWeb', opts = {}) {
 
   // 2. Automatic fallback: switch providers when none/few sources were found
   const minSources = Number.isInteger(opts.minSources) ? Math.max(1, opts.minSources) : 1;
-  const timeoutMs = Number.isInteger(opts.timeoutMs) ? Math.max(1000, opts.timeoutMs) : 12000;
 
   if (results.length < minSources) {
     // A. Check if the item already has alternateSources recorded from search deduplication
