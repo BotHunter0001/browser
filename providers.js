@@ -784,6 +784,8 @@ function withTimeout(promise, ms, message) {
  */
 async function getCatalogHomepage(provider = 'movieBoxWeb', filter = '', page = 1, genre = null) {
   let items = [];
+  const targetProvider = provider && provider !== 'all' ? provider : 'movieBoxWeb';
+
   if (provider === 'all' && genre === 'drama') {
     const sourceIds = ['kissKh', 'mkvDrama', 'cinemaLuxe', 'Joya9tv', 'movieBoxWeb', 'movieBoxApp'];
     const catalogs = await Promise.allSettled(sourceIds.map(async (sourceId) => {
@@ -811,7 +813,6 @@ async function getCatalogHomepage(provider = 'movieBoxWeb', filter = '', page = 
       };
     });
   }
-  const targetProvider = provider && provider !== 'all' ? provider : 'movieBoxWeb';
   const animeProviders = ['hiAnime', 'anikoto', 'kickAssAnime', 'animetsu', 'tokyoInsider', 'uniquestream', 'animesalt', 'animeworld'];
   const dramaProviders = ['kissKh', 'mkvDrama', 'cinemaLuxe', 'Joya9tv'];
   const catalogGroup = animeProviders.includes(targetProvider)
@@ -823,10 +824,30 @@ async function getCatalogHomepage(provider = 'movieBoxWeb', filter = '', page = 
   // Genre aggregation above already queried the known drama catalog sources.
   // Other catalog requests retain the existing provider-first fallback flow.
   const primary = registry[targetProvider]?.instance;
-  if (provider !== 'all' && primary && typeof primary.catalog === 'function') {
+  if (provider !== 'all' && targetProvider === 'movieBoxWeb' && !filter && !genre &&
+      primary && typeof primary.catalog === 'function') {
+    const categoryFilters = ['/newWeb/movie', '/newWeb/tv-series'];
+    const catalogs = await Promise.allSettled(categoryFilters.map((categoryFilter) =>
+      withTimeout(
+        primary.catalog(categoryFilter, page),
+        5500,
+        `Catalog timeout for ${categoryFilter}`
+      )
+    ));
+    items = catalogs.flatMap((catalog, index) => {
+      if (catalog.status === 'rejected') {
+        console.warn(`[Catalog] MovieBox Web ${categoryFilters[index]} catalog failed:`, catalog.reason?.message || catalog.reason);
+        return [];
+      }
+      return Array.isArray(catalog.value) ? catalog.value : [];
+    });
+  } else if (provider !== 'all' && primary && typeof primary.catalog === 'function') {
     try {
+      const catalogFilter = targetProvider === 'movieBoxWeb' && genre === 'movies'
+        ? '/newWeb/movie'
+        : filter;
       items = await withTimeout(
-        primary.catalog(filter, page),
+        primary.catalog(catalogFilter, page),
         5500,
         `Catalog timeout for ${targetProvider}`
       );
