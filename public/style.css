@@ -710,7 +710,8 @@ button:active {
 
   .player-settings-menu {
     right: 0.5rem;
-    bottom: 3rem;
+    top: 0.5rem;
+    bottom: auto;
     gap: 0.5rem;
     padding: 0.7rem;
   }
@@ -733,6 +734,42 @@ button:active {
     gap: 0.75rem;
     padding: 0.75rem;
   }
+}
+
+@media (max-width: 380px) {
+  #playerContainer > div:first-child {
+    align-items: flex-start;
+  }
+
+  #playerContainer > div:first-child > div:first-child {
+    flex-wrap: wrap;
+  }
+
+  #playerContainer > div:first-child > div:last-child > * {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+
+  .player-control-row {
+    flex-wrap: wrap;
+    gap: 0.25rem;
+  }
+
+  .player-control-group {
+    min-height: 2.25rem;
+  }
+
+  .player-control-actions {
+    flex: 1 1 100%;
+    justify-content: space-between;
+    gap: 0;
+  }
+
+  .player-control-actions .player-control-btn {
+    min-width: 2.25rem;
+    min-height: 2.25rem;
+  }
+
 }
 
 @media (max-width: 360px) {
