@@ -699,8 +699,20 @@ async function getStreams(id, providerName = 'movieBoxWeb', opts = {}) {
   return results;
 }
 
+function normalizeTitleForMatch(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function isTitleMatchForSeriesQuery(candidateTitle, queryTitle) {
+  const candidate = normalizeTitleForMatch(candidateTitle);
+  const query = normalizeTitleForMatch(queryTitle);
+
+  if (!candidate || !query) return false;
+  return candidate.includes(query) || query.includes(candidate);
+}
+
 async function getEpisodeStreams(title, seasonNumber, episodeNumber, sourceCandidates = []) {
-  const normalizedTitle = String(title || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const normalizedTitle = normalizeTitleForMatch(title);
   if (!normalizedTitle) return { provider: null, subjectId: null, releases: [] };
 
   const tried = new Set();
@@ -744,16 +756,15 @@ async function getEpisodeStreams(title, seasonNumber, episodeNumber, sourceCandi
 
   const isMatchingCandidate = (item) => {
     if (!item || typeof item !== 'object') return false;
-    const candidateTitle = String(item.title || '').toLowerCase().replace(/[^a-z0-9]/g, '');
     return item.provider !== 'addon' && registry[item.provider] && item.type === 'series' &&
-      item.subjectId && candidateTitle.includes(normalizedTitle);
+      item.subjectId && isTitleMatchForSeriesQuery(item.title, title);
   };
   const rankCandidates = (candidates) => candidates
     .filter(isMatchingCandidate)
     .sort((a, b) => {
-      const aTitle = String(a.title || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-      const bTitle = String(b.title || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-      return Number(aTitle !== normalizedTitle) - Number(bTitle !== normalizedTitle);
+      const aMatch = isTitleMatchForSeriesQuery(a.title, title);
+      const bMatch = isTitleMatchForSeriesQuery(b.title, title);
+      return Number(!aMatch) - Number(!bMatch);
     });
 
   const localResult = await resolveCandidates(rankCandidates(sourceCandidates));
@@ -824,7 +835,7 @@ async function getCatalogHomepage(provider = 'movieBoxWeb', filter = '', page = 
   // Genre aggregation above already queried the known drama catalog sources.
   // Other catalog requests retain the existing provider-first fallback flow.
   const primary = registry[targetProvider]?.instance;
-  if (provider !== 'all' && targetProvider === 'movieBoxWeb' && !filter && !genre &&
+  if (targetProvider === 'movieBoxWeb' && !filter && !genre &&
       primary && typeof primary.catalog === 'function') {
     const categoryFilters = ['/newWeb/movie', '/newWeb/tv-series'];
     const catalogs = await Promise.allSettled(categoryFilters.map((categoryFilter) =>
@@ -841,7 +852,7 @@ async function getCatalogHomepage(provider = 'movieBoxWeb', filter = '', page = 
       }
       return Array.isArray(catalog.value) ? catalog.value : [];
     });
-  } else if (provider !== 'all' && primary && typeof primary.catalog === 'function') {
+  } else if (primary && typeof primary.catalog === 'function') {
     try {
       const catalogFilter = targetProvider === 'movieBoxWeb' && genre === 'movies'
         ? '/newWeb/movie'
@@ -857,7 +868,7 @@ async function getCatalogHomepage(provider = 'movieBoxWeb', filter = '', page = 
   }
 
   // Genre-specific catalogs must not silently fall back to unrelated movie titles.
-  if (provider !== 'all' && (!items || items.length === 0) && catalogGroup) {
+  if ((!items || items.length === 0) && catalogGroup) {
     for (const fallbackId of catalogGroup) {
       const fallback = registry[fallbackId];
       if (fallbackId === targetProvider || !fallback || fallback.disabled ||
@@ -876,7 +887,7 @@ async function getCatalogHomepage(provider = 'movieBoxWeb', filter = '', page = 
   }
 
   // 2. For general catalogs, try MovieBox Web when another provider is empty.
-  if (provider !== 'all' && (!items || items.length === 0) && !catalogGroup && targetProvider !== 'movieBoxWeb') {
+  if ((!items || items.length === 0) && !catalogGroup && targetProvider !== 'movieBoxWeb') {
     const mbw = registry.movieBoxWeb?.instance;
     if (mbw && typeof mbw.catalog === 'function') {
       try {
@@ -888,7 +899,7 @@ async function getCatalogHomepage(provider = 'movieBoxWeb', filter = '', page = 
   }
 
   // 3. Generic catalog fallbacks are appropriate only for unfiltered catalogs.
-  if (provider !== 'all' && (!items || items.length === 0) && !catalogGroup) {
+  if ((!items || items.length === 0) && !catalogGroup) {
     const addon = registry.addon?.instance;
     if (addon && typeof addon.catalog === 'function') {
       try {
@@ -904,7 +915,7 @@ async function getCatalogHomepage(provider = 'movieBoxWeb', filter = '', page = 
   }
 
   // 4. Fallback to GokuHD if still empty
-  if (provider !== 'all' && (!items || items.length === 0) && !catalogGroup) {
+  if ((!items || items.length === 0) && !catalogGroup) {
     const goku = registry.gokuHD?.instance;
     if (goku && typeof goku.catalog === 'function') {
       try {
@@ -969,4 +980,6 @@ module.exports = {
   getEpisodeStreams,
   getProvidersList,
   getCatalogHomepage,
+  normalizeTitleForMatch,
+  isTitleMatchForSeriesQuery,
 };

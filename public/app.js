@@ -29,11 +29,14 @@ let lastProgressSavedAt = 0;
 
 // Active hls.js instance (if any). Destroyed before each new source load.
 let hlsPlayerInstance = null;
+let hlsStartupTimer = null;
 // Tracks which media/provider the currently displayed streams came from, so a
 // failed playback can automatically re-resolve sources from another provider.
 let activeStreamContext = { id: '', provider: 'addon' };
 
 let autoSwitchTried = false;
+let autoSwitchCandidates = [];
+let autoSwitchBaseTitle = '';
 // DOM Elements
 const searchForm = document.getElementById('searchForm');
 const searchInput = document.getElementById('searchInput');
@@ -41,7 +44,6 @@ const searchBtn = document.getElementById('searchBtn');
 const searchBtnText = document.getElementById('searchBtnText');
 const searchSpinner = document.getElementById('searchSpinner');
 const heroSearchSection = document.getElementById('heroSearchSection');
-const providerSelect = document.getElementById('providerSelect');
 
 function showSearchHero() {
   if (heroSearchSection) {
@@ -581,7 +583,6 @@ videoPlayerContainer?.addEventListener('keydown', (event) => {
 
 // Gateway host info
 const sessionHostBadge = document.getElementById('sessionHostBadge');
-const rotateHostBtn = document.getElementById('rotateHostBtn');
 
 // Provider badge styling mapping
 const providerStyles = {
@@ -1508,6 +1509,7 @@ async function loadStreams(id, provider = 'addon', episodeContext = null) {
     episode: episodeContext?.episode || null,
   };
   autoSwitchTried = false;
+  autoSwitchCandidates = [];
   streamsSection.classList.remove('hidden');
   streamsLoading.classList.remove('hidden');
   streamsList.innerHTML = '';
@@ -1740,6 +1742,10 @@ async function loadStreams(id, provider = 'addon', episodeContext = null) {
  * Destroy any active hls.js instance and detach it from the video element.
  */
 function destroyHls() {
+  if (hlsStartupTimer) {
+    clearTimeout(hlsStartupTimer);
+    hlsStartupTimer = null;
+  }
   if (hlsPlayerInstance) {
     hlsPlayerInstance.destroy();
     hlsPlayerInstance = null;
@@ -1830,6 +1836,10 @@ function playStreamSource(rawUrl, title, cookie = '', forceProxy = false, stream
 
   savePlaybackProgress();
   // Always destroy any previous hls.js instance before loading a new source.
+  if (hlsStartupTimer) {
+    clearTimeout(hlsStartupTimer);
+    hlsStartupTimer = null;
+  }
   destroyHls();
 
   // Normalize protocol-relative URLs (e.g. //host/path) that some mirrors return
@@ -1878,7 +1888,12 @@ function playStreamSource(rawUrl, title, cookie = '', forceProxy = false, stream
   // CORS is handled server-side. Wire Hls.Events.ERROR for fatal network
   // failures so the player auto-switches to another provider mirror.
   if (/\.m3u8(\?|#|$)/i.test(url)) {
-    const hlsProxyUrl = `/api/proxy-hls?url=${encodeURIComponent(url)}${cookie ? '&cookie=' + encodeURIComponent(cookie) : ''}`;
+    const hlsParams = new URLSearchParams({ url });
+    if (cookie) hlsParams.set('cookie', cookie);
+    if (streamHeaders && typeof streamHeaders === 'object' && Object.keys(streamHeaders).length) {
+      hlsParams.set('headers', JSON.stringify(streamHeaders));
+    }
+    const hlsProxyUrl = `/api/proxy-hls?${hlsParams.toString()}`;
 
     if (typeof Hls !== 'undefined' && Hls.isSupported()) {
       const hls = new Hls({ startLevel: -1 }); // -1 = auto quality
@@ -1888,6 +1903,21 @@ function playStreamSource(rawUrl, title, cookie = '', forceProxy = false, stream
 
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         videoPlayer.play().catch((e) => console.warn('HLS play() blocked:', e?.name));
+        hlsStartupTimer = setTimeout(() => {
+          hlsStartupTimer = null;
+          if (videoPlayer.currentTime > 0 || videoPlayer.readyState >= 2) return;
+          if (autoSwitchTried && autoSwitchCandidates.length) {
+            tryNextFallbackSource(url);
+            return;
+          }
+          if (autoSwitchTried || !activeStreamContext.id) {
+            showError('This HLS source is not delivering playable media. Try another mirror.');
+            return;
+          }
+          autoSwitchTried = true;
+          showError('HLS source is not starting — checking another source...');
+          autoSwitchToWorkingSource(url);
+        }, 15000);
       });
 
       // A4 fix: wire HLS fatal network errors to the same auto-switch path
@@ -1896,18 +1926,19 @@ function playStreamSource(rawUrl, title, cookie = '', forceProxy = false, stream
       hls.on(Hls.Events.ERROR, (_, data) => {
         if (!data.fatal) return;
         console.warn(`HLS fatal error: type=${data.type} details=${data.details}`);
-        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-          if (!autoSwitchTried && activeStreamContext.id) {
-            autoSwitchTried = true;
-            showError('HLS source failed — switching to another provider...');
-            autoSwitchToWorkingSource(url);
-          } else {
-            hls.startLoad(); // try one internal recovery first
-            showError('HLS network error — check your connection or try another mirror.');
-          }
+        if (autoSwitchTried && autoSwitchCandidates.length) {
+          tryNextFallbackSource(url);
+        } else if (!autoSwitchTried && activeStreamContext.id) {
+          autoSwitchTried = true;
+          showError(data.type === Hls.ErrorTypes.NETWORK_ERROR
+            ? 'HLS source failed — checking another source...'
+            : 'HLS media failed — checking another source...');
+          autoSwitchToWorkingSource(url);
+        } else if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          hls.startLoad();
+          showError('HLS network error — check your connection or try another mirror.');
         } else {
-          // Media / other fatal error — nothing hls.js can do, surface to user
-          showError('HLS playback error — the stream format may be unsupported. Try another mirror.');
+          showError('HLS playback error — try another mirror or source.');
         }
       });
 
@@ -2020,21 +2051,41 @@ async function autoSwitchToWorkingSource(failedUrl) {
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
 
     const data = await res.json();
-    const pool = [data.source, ...(data.alternatives || [])].filter(Boolean);
-    // Pick the first candidate that isn't the URL we just tried
-    const next = pool.find((c) => c.url !== failedUrl) || null;
-
-    if (!next) {
-      showError('No alternative provider has a working source for this title right now.');
-      return;
-    }
-
-    hideError();
-    console.log(`Auto-switched source to provider: ${next.provider || 'unknown'}`);
-    playStreamSource(next.url, `${currentPlayback.title || activeMedia?.title || 'Video'} (${next.provider || 'alt provider'})`, next.cookie || '', true, next.headers || null, currentPlayback.subtitles);
+    const pool = [data.source, ...(data.alternatives || [])]
+      .filter((candidate) => candidate?.url && candidate.url !== failedUrl);
+    const seen = new Set();
+    autoSwitchCandidates = pool.filter((candidate) => {
+      if (seen.has(candidate.url)) return false;
+      seen.add(candidate.url);
+      return true;
+    });
+    tryNextFallbackSource(failedUrl);
   } catch (err) {
     showError('Provider switch failed: ' + err.message);
   }
+}
+
+function tryNextFallbackSource(failedUrl) {
+  const next = autoSwitchCandidates.shift();
+  if (!next) {
+    showError('No playable alternate source is available for this title right now.');
+    return;
+  }
+  if (next.url === failedUrl) {
+    tryNextFallbackSource(failedUrl);
+    return;
+  }
+  hideError();
+  console.log(`Auto-switched source to provider: ${next.provider || 'unknown'}`);
+  const baseTitle = autoSwitchBaseTitle || currentPlayback.title || activeMedia?.title || 'Video';
+  playStreamSource(
+    next.url,
+    `${baseTitle} (${next.provider || 'alt provider'})`,
+    next.cookie || '',
+    true,
+    next.headers || null,
+    currentPlayback.subtitles
+  );
 }
 
 function updatePlayerMode() {
@@ -2076,6 +2127,12 @@ function closeVideoPlayer() {
   savePlaybackProgress();
   currentPlayback.historyId = null;
   pendingResumeSeconds = 0;
+  autoSwitchCandidates = [];
+  autoSwitchBaseTitle = '';
+  if (hlsStartupTimer) {
+    clearTimeout(hlsStartupTimer);
+    hlsStartupTimer = null;
+  }
   destroyHls();
   if (videoPlayer) {
     videoPlayer.onerror = null;
@@ -2311,26 +2368,6 @@ async function fetchSessionStatus() {
   }
 }
 
-async function handleRotateHost() {
-  try {
-    if (rotateHostBtn) rotateHostBtn.disabled = true;
-    const res = await fetch('/api/hosts/rotate', { method: 'POST' });
-    if (!res.ok) {
-      if (sessionHostBadge) sessionHostBadge.textContent = 'Gateway unsupported';
-      return;
-    }
-    await fetchSessionStatus();
-    if (searchInput.value.trim()) {
-      handleSearch(searchInput.value.trim());
-    }
-  } catch (err) {
-    console.error(err);
-    if (sessionHostBadge) sessionHostBadge.textContent = 'Gateway offline';
-  } finally {
-    if (rotateHostBtn) rotateHostBtn.disabled = false;
-  }
-}
-
 /**
  * Filter change handler
  */
@@ -2384,16 +2421,6 @@ searchForm.addEventListener('submit', (e) => {
 
 loadMoreBtn?.addEventListener('click', loadMoreResults);
 
-// Provider select change
-providerSelect?.addEventListener('change', (e) => {
-  selectedProvider = e.target.value;
-  if (searchInput.value.trim()) {
-    handleSearch(searchInput.value.trim());
-  } else {
-    loadCatalogHomepage(selectedProvider);
-  }
-});
-
 // Results grid — card click and "Explore Details" button
 // Placed here (outside showSearchResults) so it's set up exactly once.
 // showSearchResults only replaces innerHTML inside the grid; the grid element
@@ -2421,15 +2448,6 @@ resultsGrid.addEventListener('click', (e) => {
 filterAllBtn?.addEventListener('click', () => setFilter('all'));
 filterMoviesBtn?.addEventListener('click', () => setFilter('movie'));
 filterSeriesBtn?.addEventListener('click', () => setFilter('series'));
-
-// Quick Suggestions
-document.querySelectorAll('.quick-chip[data-query]').forEach(chip => {
-  chip.addEventListener('click', () => {
-    const q = chip.getAttribute('data-query');
-    searchInput.value = q;
-    handleSearch(q);
-  });
-});
 
 // Modal close buttons
 closeDetailsBtn.addEventListener('click', () => {
@@ -2461,6 +2479,9 @@ streamsList?.addEventListener('click', (e) => {
   const mirror = Number.isFinite(idx) ? globalMirrorStore[idx] : null;
 
   if (action === 'play-stream' && mirror && mirror.url) {
+    autoSwitchTried = false;
+    autoSwitchCandidates = [];
+    autoSwitchBaseTitle = mirror.title;
     playStreamSource(mirror.url, mirror.title, mirror.cookie, false, mirror.headers, mirror.subtitles);
   } else if (action === 'copy-url' && mirror && mirror.url) {
     copyToClipboard(mirror.url, btn);
@@ -2571,10 +2592,6 @@ function updateProviderUI(provId, provName, selectedGenre) {
         b.classList.remove('active');
       }
     });
-  }
-
-  if (providerSelect) {
-    providerSelect.value = provId;
   }
 
   renderProvidersModalList();
@@ -2692,43 +2709,6 @@ async function loadProvidersDropdown() {
       groups[cat].push(p);
     }
 
-    if (providerSelect) {
-      let html = `<option value="all" class="bg-[#161412] text-white">⚡ Unified Search (${providers.length} Providers)</option>`;
-      const orderedCategories = [
-        'Featured Streaming',
-        'Native',
-        'Vega English',
-        'Vega Global',
-        'Vega Anime',
-        'Vega Regional (India)',
-        'BDIX & Local',
-        'Vega Regional',
-      ];
-
-      for (const cat of orderedCategories) {
-        if (groups[cat] && groups[cat].length > 0) {
-          html += `<optgroup label="── ${cat} ──" class="bg-[#161412] text-amber-400 font-bold">`;
-          for (const p of groups[cat]) {
-            html += `<option value="${escapeQuotes(p.id)}" class="bg-[#161412] text-white">${escapeHtml(p.name)} (${p.type || 'scraper'})</option>`;
-          }
-          html += `</optgroup>`;
-        }
-      }
-
-      for (const [cat, list] of Object.entries(groups)) {
-        if (!orderedCategories.includes(cat) && list.length > 0) {
-          html += `<optgroup label="── ${cat} ──" class="bg-[#161412] text-amber-400 font-bold">`;
-          for (const p of list) {
-            html += `<option value="${escapeQuotes(p.id)}" class="bg-[#161412] text-white">${escapeHtml(p.name)}</option>`;
-          }
-          html += `</optgroup>`;
-        }
-      }
-
-      providerSelect.innerHTML = html;
-      providerSelect.value = selectedProvider;
-    }
-
     updateProviderUI(selectedProvider);
   } catch (err) {
     console.warn('Failed to load providers list:', err);
@@ -2809,9 +2789,6 @@ topChannelsBar?.addEventListener('click', (e) => {
     loadCatalogHomepage(prov, g);
   }
 });
-
-// Host rotation (if present)
-rotateHostBtn?.addEventListener('click', handleRotateHost);
 
 // Brand Home Button click returns to catalog homepage
 document.getElementById('brandHomeBtn')?.addEventListener('click', () => {

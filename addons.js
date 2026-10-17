@@ -28,19 +28,23 @@ class AddonProvider {
         const hasSearchExtra = Array.isArray(cat.extra) && cat.extra.some(e => e.name === 'search');
         if (!typeSupported || !hasSearchExtra) continue;
 
-        const url = `${this.base}/catalog/${cat.type}/${cat.id}.json?search=${encodeURIComponent(query)}`;
+        const url = `${this.base}/catalog/${cat.type}/${cat.id}/search=${encodeURIComponent(query)}.json`;
         try {
           const res = await fetch(url, { signal: AbortSignal.timeout(2000) });
           if (!res.ok) continue;
           const data = await res.json();
           for (const item of data.metas ?? []) {
+            const rawYear = item.year ?? item.releaseInfo;
+            const yearMatch = rawYear ? String(rawYear).match(/\b(19\d{2}|20\d{2})\b/) : null;
+            const year = yearMatch ? Number(yearMatch[1]) : null;
             results.push({
               subjectId: `${cat.type}:${item.id}`,
               title: item.name,
-              year: item.year ? Number(item.year) : (item.releaseInfo ? Number(String(item.releaseInfo).slice(0, 4)) : null),
+              year,
               poster: item.poster ?? null,
               type: cat.type === 'series' ? 'series' : 'movie',
               provider: 'addon',
+              providerDisplayName: this.displayName,
             });
           }
         } catch {
@@ -59,15 +63,20 @@ class AddonProvider {
       const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
       if (!res.ok) return [];
       const data = await res.json();
-      return (data.metas || []).map((item) => ({
-        subjectId: `${type}:${item.id}`,
-        title: item.name,
-        year: item.year ? Number(item.year) : (item.releaseInfo ? Number(String(item.releaseInfo).slice(0, 4)) : null),
-        poster: item.poster ?? null,
-        type: type === 'series' ? 'series' : 'movie',
-        provider: 'addon',
-        providerDisplayName: this.displayName,
-      }));
+      return (data.metas || []).map((item) => {
+        const rawYear = item.year ?? item.releaseInfo;
+        const yearMatch = rawYear ? String(rawYear).match(/\b(19\d{2}|20\d{2})\b/) : null;
+        const year = yearMatch ? Number(yearMatch[1]) : null;
+        return {
+          subjectId: `${type}:${item.id}`,
+          title: item.name,
+          year,
+          poster: item.poster ?? null,
+          type: type === 'series' ? 'series' : 'movie',
+          provider: 'addon',
+          providerDisplayName: this.displayName,
+        };
+      });
     } catch {
       return [];
     }
@@ -105,7 +114,11 @@ class AddonProvider {
         subjectId: id,
         title: m.name ?? '',
         description: m.description ?? '',
-        year: m.year ? Number(m.year) : (m.releaseInfo ? Number(String(m.releaseInfo).slice(0, 4)) : null),
+        year: (() => {
+          const rawYear = m.year ?? m.releaseInfo;
+          const yearMatch = rawYear ? String(rawYear).match(/\b(19\d{2}|20\d{2})\b/) : null;
+          return yearMatch ? Number(yearMatch[1]) : null;
+        })(),
         poster: m.poster ?? null,
         genres: m.genres ?? [],
         duration: m.runtime ?? null,

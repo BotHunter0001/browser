@@ -305,7 +305,7 @@ app.get('/api/search', async (req, res) => {
         return { results, complete };
       },
       undefined,
-      (value) => value.complete
+      (value) => value.complete && Array.isArray(value.results) && value.results.length > 0
     );
     const results = cached.results;
     res.json({
@@ -599,12 +599,94 @@ app.get('/api/resolve-source', async (req, res) => {
       }
     }
 
-    // Probe each candidate concurrently — first one that responds OK wins
+    async function readPrefix(response, maxBytes) {
+      if (!response.body) return Buffer.alloc(0);
+      const reader = response.body.getReader();
+      const chunks = [];
+      let size = 0;
+      try {
+        while (size < maxBytes) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = Buffer.from(value).subarray(0, maxBytes - size);
+          chunks.push(chunk);
+          size += chunk.length;
+          if (chunk.length !== value.length) break;
+        }
+      } finally {
+        try { await reader.cancel(); } catch { /* The prefix is enough for probing. */ }
+      }
+      return Buffer.concat(chunks, size);
+    }
+
+    async function assertPlayableHls(candidate, signal) {
+      let target = candidate.url;
+      let segmentUrl = '';
+      for (let depth = 0; depth < 3; depth++) {
+        const playlist = await safeFetch(target, {
+          headers: buildUpstreamHeaders({ headers: {} }, {
+            headers: candidate.headers ? JSON.stringify(candidate.headers) : '',
+            cookie: candidate.cookie,
+          }),
+          signal,
+        });
+        if (!playlist.ok) {
+          try { await playlist.body?.cancel(); } catch { /* Ignore cleanup errors. */ }
+          throw new Error(`HLS playlist returned HTTP ${playlist.status}`);
+        }
+        const text = (await readPrefix(playlist, 512 * 1024)).toString('utf8');
+        if (!text.trimStart().startsWith('#EXTM3U')) throw new Error('Invalid HLS playlist');
+
+        const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+        const variantIndex = lines.findIndex((line) => line.startsWith('#EXT-X-STREAM-INF'));
+        if (variantIndex >= 0) {
+          const variantUri = lines.slice(variantIndex + 1).find((line) => !line.startsWith('#'));
+          if (!variantUri) throw new Error('HLS master playlist has no variant');
+          target = new URL(variantUri, playlist.url || target).toString();
+          continue;
+        }
+
+        segmentUrl = lines.find((line) => !line.startsWith('#')) || '';
+        if (!segmentUrl) throw new Error('HLS media playlist has no segments');
+        segmentUrl = new URL(segmentUrl, playlist.url || target).toString();
+        break;
+      }
+      if (!segmentUrl) throw new Error('HLS playlist nesting is too deep');
+
+      const segment = await safeFetch(segmentUrl, {
+        headers: {
+          ...buildUpstreamHeaders({ headers: {} }, {
+            headers: candidate.headers ? JSON.stringify(candidate.headers) : '',
+            cookie: candidate.cookie,
+          }),
+          Range: 'bytes=0-1023',
+        },
+        signal,
+      });
+      if (!(segment.ok || segment.status === 206)) {
+        try { await segment.body?.cancel(); } catch { /* Ignore cleanup errors. */ }
+        throw new Error(`HLS segment returned HTTP ${segment.status}`);
+      }
+      const contentType = String(segment.headers.get('content-type') || '').toLowerCase();
+      const prefix = (await readPrefix(segment, 1024)).toString('latin1').trimStart().toLowerCase();
+      if (contentType.startsWith('image/') || contentType.includes('text/html') ||
+          /^<(?:!doctype\s+html|html|head|body)\b/.test(prefix) ||
+          prefix.startsWith('gif8') || prefix.startsWith('ÿØÿ') || prefix.startsWith('\u0089png')) {
+        throw new Error('HLS playlist points to a non-media segment');
+      }
+    }
+
+    // Probe actual HLS media segments, not just a playlist URL that may return a
+    // valid manifest while pointing at HTML or image placeholders.
     const probes = candidates.slice(0, 20).map((c) =>
       (async () => {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 10000);
         try {
+          if (/\.m3u8(?:[?#]|$)/i.test(c.url)) {
+            await assertPlayableHls(c, controller.signal);
+            return c;
+          }
           const upstream = await safeFetch(c.url, {
             method: 'GET',
             headers: { ...buildUpstreamHeaders({ headers: {} }, { headers: c.headers ? JSON.stringify(c.headers) : '', cookie: c.cookie }), Range: 'bytes=0-1023' },
@@ -647,10 +729,7 @@ app.get('/api/proxy-hls', async (req, res) => {
     wireClientAbort(req, res, controller);
 
     const upstream = await safeFetch(targetUrl, {
-      headers: {
-        'User-Agent': BROWSER_UA,
-        ...(req.query.cookie ? { 'Cookie': String(req.query.cookie).slice(0, 4096) } : {}),
-      },
+      headers: buildUpstreamHeaders(req, req.query),
       signal: controller.signal,
     });
 
@@ -660,9 +739,9 @@ app.get('/api/proxy-hls', async (req, res) => {
 
     const raw = await upstream.text();
 
-    // Compute the base URL for resolving relative URIs in the playlist.
+    // Compute the base URL for resolving relative URIs in the playlist without
+    // losing query parameters or path segments from the upstream source.
     const base = new URL(targetUrl);
-    const baseDir = targetUrl.slice(0, targetUrl.lastIndexOf('/') + 1);
 
     /**
      * Make any URI in the playlist absolute and then rewrite it so it routes
@@ -672,22 +751,25 @@ app.get('/api/proxy-hls', async (req, res) => {
     function rewriteUri(uri) {
       if (!uri || uri.startsWith('#')) return uri;
       uri = uri.trim();
-      // Already absolute?
+
       let absolute;
-      if (/^https?:\/\//i.test(uri)) {
-        absolute = uri;
-      } else if (uri.startsWith('//')) {
-        absolute = base.protocol + uri;
-      } else if (uri.startsWith('/')) {
-        absolute = `${base.protocol}//${base.host}${uri}`;
-      } else {
-        absolute = baseDir + uri;
+      try {
+        absolute = new URL(uri, base).toString();
+      } catch {
+        return uri;
       }
 
       // Route sub-playlists through proxy-hls, everything else through proxy-video
       const isPlaylist = /\.m3u8(\?|#|$)/i.test(absolute);
       const proxyBase = isPlaylist ? '/api/proxy-hls' : '/api/proxy-video';
-      return `${proxyBase}?url=${encodeURIComponent(absolute)}`;
+      const params = new URLSearchParams({ url: absolute });
+      if (typeof req.query.cookie === 'string' && req.query.cookie) {
+        params.set('cookie', req.query.cookie.slice(0, 4096));
+      }
+      if (typeof req.query.headers === 'string' && req.query.headers) {
+        params.set('headers', req.query.headers.slice(0, 8192));
+      }
+      return `${proxyBase}?${params.toString()}`;
     }
 
     // Rewrite the M3U8 line by line.
@@ -839,7 +921,7 @@ const server = app.listen(PORT, HOST, () => {
 server.requestTimeout = 0; // long video streams must not be cut off
 server.headersTimeout = 30000;
 server.keepAliveTimeout = 15000;
-server.maxHeadersCount = 20;
+server.maxHeadersCount = 100; // allow Range/video-request headers without artificial limits
 
 process.on('unhandledRejection', (err) => console.error('[Unhandled Rejection]', err));
 const shutdown = () => {
