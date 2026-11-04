@@ -2,6 +2,7 @@ const express = require('express');
 const path = require('path');
 const { searchAll, getDetails, getStreams, getEpisodeStreams, getProvidersList, getCatalogHomepage, registry } = require('./providers');
 const { safeFetch, assertSafeUrl } = require('./lib/netGuard');
+const { probePlayableSource } = require('./lib/mediaProbe');
 const { wireClientAbort } = require('./lib/clientAbort');
 const { TTLCache } = require('./lib/cache');
 const {
@@ -42,7 +43,7 @@ const csp = [
   "media-src 'self' data: blob: https: http:",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' data: https://fonts.gstatic.com",
-  "script-src 'self' https://cdn.jsdelivr.net",
+  "script-src 'self'",
   "connect-src 'self' https: http: data: blob:",
   "worker-src 'self' blob:",
   "manifest-src 'self'",
@@ -840,112 +841,16 @@ app.get('/api/resolve-source', async (req, res) => {
     for (const r of releases) {
       for (const m of r.mirrors || []) {
         if (m && m.resolverUrl && !/^https?:\/\/[^/]+\/api\//.test(m.resolverUrl)) {
-          candidates.push({ url: m.resolverUrl, headers: m.headers || null, cookie: m.signCookie || '', quality: r.quality, provider: r.provider });
+          candidates.push({ url: m.resolverUrl, headers: m.headers || null, cookie: m.signCookie || '', quality: r.quality, provider: r.provider, type: m.type || m.streamType || r.codec || '' });
         }
       }
     }
 
-    async function readPrefix(response, maxBytes) {
-      if (!response.body) return Buffer.alloc(0);
-      const reader = response.body.getReader();
-      const chunks = [];
-      let size = 0;
-      try {
-        while (size < maxBytes) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          const chunk = Buffer.from(value).subarray(0, maxBytes - size);
-          chunks.push(chunk);
-          size += chunk.length;
-          if (chunk.length !== value.length) break;
-        }
-      } finally {
-        try { await reader.cancel(); } catch { /* The prefix is enough for probing. */ }
-      }
-      return Buffer.concat(chunks, size);
-    }
-
-    async function assertPlayableHls(candidate, signal) {
-      let target = candidate.url;
-      let segmentUrl = '';
-      for (let depth = 0; depth < 3; depth++) {
-        const playlist = await safeFetch(target, {
-          headers: buildUpstreamHeaders({ headers: {} }, {
-            headers: candidate.headers ? JSON.stringify(candidate.headers) : '',
-            cookie: candidate.cookie,
-          }),
-          signal,
-        });
-        if (!playlist.ok) {
-          try { await playlist.body?.cancel(); } catch { /* Ignore cleanup errors. */ }
-          throw new Error(`HLS playlist returned HTTP ${playlist.status}`);
-        }
-        const text = (await readPrefix(playlist, 512 * 1024)).toString('utf8');
-        if (!text.trimStart().startsWith('#EXTM3U')) throw new Error('Invalid HLS playlist');
-
-        const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-        const variantIndex = lines.findIndex((line) => line.startsWith('#EXT-X-STREAM-INF'));
-        if (variantIndex >= 0) {
-          const variantUri = lines.slice(variantIndex + 1).find((line) => !line.startsWith('#'));
-          if (!variantUri) throw new Error('HLS master playlist has no variant');
-          target = new URL(variantUri, playlist.url || target).toString();
-          continue;
-        }
-
-        segmentUrl = lines.find((line) => !line.startsWith('#')) || '';
-        if (!segmentUrl) throw new Error('HLS media playlist has no segments');
-        segmentUrl = new URL(segmentUrl, playlist.url || target).toString();
-        break;
-      }
-      if (!segmentUrl) throw new Error('HLS playlist nesting is too deep');
-
-      const segment = await safeFetch(segmentUrl, {
-        headers: {
-          ...buildUpstreamHeaders({ headers: {} }, {
-            headers: candidate.headers ? JSON.stringify(candidate.headers) : '',
-            cookie: candidate.cookie,
-          }),
-          Range: 'bytes=0-1023',
-        },
-        signal,
-      });
-      if (!(segment.ok || segment.status === 206)) {
-        try { await segment.body?.cancel(); } catch { /* Ignore cleanup errors. */ }
-        throw new Error(`HLS segment returned HTTP ${segment.status}`);
-      }
-      const contentType = String(segment.headers.get('content-type') || '').toLowerCase();
-      const prefix = (await readPrefix(segment, 1024)).toString('latin1').trimStart().toLowerCase();
-      if (contentType.startsWith('image/') || contentType.includes('text/html') ||
-          /^<(?:!doctype\s+html|html|head|body)\b/.test(prefix) ||
-          prefix.startsWith('gif8') || prefix.startsWith('ÿØÿ') || prefix.startsWith('\u0089png')) {
-        throw new Error('HLS playlist points to a non-media segment');
-      }
-    }
-
-    // Probe actual HLS media segments, not just a playlist URL that may return a
-    // valid manifest while pointing at HTML or image placeholders.
-    const probes = candidates.slice(0, 20).map((c) =>
-      (async () => {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 10000);
-        try {
-          if (/\.m3u8(?:[?#]|$)/i.test(c.url)) {
-            await assertPlayableHls(c, controller.signal);
-            return c;
-          }
-          const upstream = await safeFetch(c.url, {
-            method: 'GET',
-            headers: { ...buildUpstreamHeaders({ headers: {} }, { headers: c.headers ? JSON.stringify(c.headers) : '', cookie: c.cookie }), Range: 'bytes=0-1023' },
-            signal: controller.signal,
-          });
-          const ok = upstream.ok || upstream.status === 206;
-          try { upstream.body?.cancel(); } catch { /* ignore */ }
-          if (!ok) throw new Error(`HTTP ${upstream.status}`);
-          return c;
-        } finally {
-          clearTimeout(timer);
-        }
-      })().catch(() => null)
+    // Probe actual media bytes, not just a URL that returns HTTP 200. The
+    // shared probe rejects challenge pages, images and invalid HLS playlists,
+    // and annotates real HLS sources so the player can choose the right path.
+    const probes = candidates.slice(0, 20).map((candidate) =>
+      probePlayableSource(candidate, { timeoutMs: 15000 })
     );
 
     const settled = await Promise.allSettled(probes);
@@ -954,6 +859,11 @@ app.get('/api/resolve-source', async (req, res) => {
       .map((s) => s.value);
 
     if (alive.length === 0) {
+      const reasons = settled
+        .filter((s) => s.status === 'rejected')
+        .slice(0, 3)
+        .map((s) => String(s.reason?.message || s.reason).slice(0, 120));
+      console.warn(`[resolve-source] No playable source for ${provider} (${candidates.length} tested): ${reasons.join(' | ')}`);
       return res.status(404).json({ error: 'No working source found on any provider', id, provider, tested: candidates.length });
     }
 

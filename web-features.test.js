@@ -63,6 +63,22 @@ test('player sleep timer and auto-next preference are implemented', () => {
   assert.ok(app.includes('videoPlayer.pause()'));
 });
 
+test('browser player exposes volume, fill mode, and complete keyboard shortcuts', () => {
+  assert.ok(html.includes('id="playerVolume"'));
+  assert.ok(html.includes('id="playerFitBtn"'));
+  assert.ok(app.includes('function setPlayerVolume'));
+  assert.ok(app.includes('function applyPlayerFill'));
+  assert.ok(app.includes("localStorage.getItem(PLAYER_VOLUME_KEY)"));
+  assert.ok(app.includes('raw === null ? NaN'), 'missing saved volume must not silence the player by default');
+  assert.ok(app.includes("localStorage.getItem(PLAYER_FILL_KEY)"));
+  assert.ok(app.includes("lower === 'j'"));
+  assert.ok(app.includes("lower === 'p'"));
+  assert.ok(app.includes("lower === 'c'"));
+  assert.ok(app.includes("lower === 'a'"));
+  assert.ok(app.includes("lower === 's'"));
+  assert.ok(css.includes('.player-fill video'));
+});
+
 test('security: no inline handlers remain and CSP forbids inline scripts', () => {
   assert.equal(/on(?:error|click|load|submit|change|input)\s*=\s*"/i.test(html + app), false);
   assert.equal(/script-src[^;]*'unsafe-inline'/i.test(server), false);
@@ -71,11 +87,14 @@ test('security: no inline handlers remain and CSP forbids inline scripts', () =>
   assert.ok(app.includes("image.src = POSTER_FALLBACK"));
   assert.equal(/\$\{posterUrl\}/.test(app), true, 'posters still render through escaped URL values');
   assert.equal(/onerror\s*=\s*"/.test(app), false);
-  const hlsScript = html.match(/<script[^>]+hls\.js@([^/]+)[^>]+>/);
-  assert.ok(hlsScript, 'hls.js is loaded');
-  assert.match(hlsScript[1], /^\d+\.\d+\.\d+$/, 'hls.js version is pinned');
+  const hlsScript = html.match(/<script[^>]+src="\/vendor\/hls\.min\.js"[^>]*>/);
+  assert.ok(hlsScript, 'hls.js is loaded from the local vendor directory');
+  assert.match(html, /hls\.js 1\.7\.4/, 'hls.js version is pinned in the source comment');
   assert.match(hlsScript[0], /integrity="sha384-[A-Za-z0-9+/=]+"/);
   assert.match(hlsScript[0], /crossorigin="anonymous"/);
+  assert.ok(fs.statSync(path.join(__dirname, 'public', 'vendor', 'hls.min.js')).size > 500000);
+  assert.ok(fs.existsSync(path.join(__dirname, 'public', 'vendor', 'hls.LICENSE')));
+  assert.equal(/cdn\.jsdelivr/.test(html + server), false, 'playback has no CDN dependency');
 });
 
 test('downloads and proxy responses are bounded and validated', () => {

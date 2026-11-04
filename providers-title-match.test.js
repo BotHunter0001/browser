@@ -22,5 +22,28 @@ test('episode candidate ranking keeps a longer matching title and rejects unrela
   ], 'The Office'), []);
 });
 
+test('web releases drop torrent-only mirrors and normalize protocol-relative URLs', () => {
+  const { normalizeWebRelease } = require('./providers');
+  assert.equal(normalizeWebRelease({
+    quality: '1080p',
+    mirrors: [{ resolverUrl: 'magnet:?xt=urn:btih:abc' }],
+  }, 'animesub'), null);
+  assert.equal(normalizeWebRelease({
+    quality: '1080p',
+    mirrors: [{ resolverUrl: 'javascript:alert(1)' }],
+  }, 'addon'), null);
+
+  const normalized = normalizeWebRelease({
+    provider: 'Test',
+    quality: '720p',
+    mirrors: [
+      { resolverUrl: '//cdn.example/stream.m3u8' },
+      { resolverUrl: 'magnet:?xt=urn:btih:abc' },
+    ],
+  }, 'addon');
+  assert.equal(normalized.mirrors.length, 1);
+  assert.equal(normalized.mirrors[0].resolverUrl, 'https://cdn.example/stream.m3u8');
+});
+
 const _normalized = normalizeTitleForMatch('The Office US');
 assert.equal(_normalized.includes('theoffice'), true);

@@ -206,7 +206,8 @@ for (const vp of vegaProviders) {
 
 // Core primary providers queried in unified "All Providers" search
 const CORE_UNIFIED_PROVIDERS = [
-  'movieBoxApp',
+  'movieBoxWeb',
+  'movieBox',
   'addon',
   'showbox',
   'flixhq',
@@ -215,11 +216,19 @@ const CORE_UNIFIED_PROVIDERS = [
   'hdhub4u',
   'gokuHD',
   'hiAnime',
+  'anikoto',
+  'kickAssAnime',
+  'animesub',
+  'kartoons',
+  '1flex',
+  'internetArchive',
   'katmovies',
   'mod',
   'ridoMovies',
   'drive',
   'world4u',
+  'castle',
+  'dooflix',
 ];
 
 // ─── Genre-based provider priority lists ────────────────────────────────────
@@ -231,21 +240,23 @@ const TOP_PROVIDER = 'movieBoxWeb';
 const GENRE_SEARCH_PRIORITIES = {
   movies: [
     TOP_PROVIDER,
-    'movieBoxApp',
-    'addon',          // Stremio Cinemeta metadata backbone
+    'movieBox',
+    'addon',
     'flixhq',
     'showbox',
     'ridoMovies',
     'vega',
     'hdhub4u',
     '4khdhub',
-    'mod',            // MoviesMod
-    'drive',          // MoviesDrive
+    'mod',
+    'drive',
     'katmovies',
     'world4u',
     'uhd',
     'multi',
-    'neonMovies',
+    '1flex',
+    'internetArchive',
+    'castle',
     'movies4u',
     'kmMovies',
     'netflixMirror',
@@ -256,15 +267,17 @@ const GENRE_SEARCH_PRIORITIES = {
   ],
   anime: [
     TOP_PROVIDER,
-    'movieBoxApp',
     'hiAnime',
     'gokuHD',
     'anikoto',
     'kickAssAnime',
+    'kartoons',
+    'animesub',
     'animetsu',
     'tokyoInsider',
     'uniquestream',
-    'animerulz',
+    'animesalt',
+    'animeworld',
     'addon',
     'vega',
     'showbox',
@@ -273,10 +286,10 @@ const GENRE_SEARCH_PRIORITIES = {
   ],
   drama: [
     TOP_PROVIDER,
-    'movieBoxApp',
-    'mkvDrama',       // Asian/C-drama/K-drama specialist
-    'kissKh',         // K-drama
-    'zeefliz',        // Turkish dramas
+    'mkvDrama',
+    'kissKh',
+    'zeefliz',
+    'dramacool',
     'cinemaLuxe',
     'Joya9tv',
     'addon',
@@ -287,7 +300,6 @@ const GENRE_SEARCH_PRIORITIES = {
   ],
   hollywood: [
     TOP_PROVIDER,
-    'movieBoxApp',
     'addon',
     'flixhq',
     'showbox',
@@ -305,9 +317,8 @@ const GENRE_SEARCH_PRIORITIES = {
   ],
   bollywood: [
     TOP_PROVIDER,
-    'movieBoxApp',
-    '1cinevood',      // Cinewood (Hindi dub/regional)
-    'luxMovies',      // RogMovies
+    '1cinevood',
+    'luxMovies',
     'topmovies',
     'moviezwap',
     'dooflix',
@@ -319,6 +330,8 @@ const GENRE_SEARCH_PRIORITIES = {
     'addon',
     'everything',
     'autoEmbed',
+    'mxplayer',
+    'movielinkdb',
   ],
 };
 
@@ -578,14 +591,34 @@ async function getDetails(id, providerName = 'addon') {
  * or title search) until playable/downloadable sources are found.
  * User request: "we will just swich to another provider when playing or download or pay is not avaliable"
  */
+function normalizeWebMirror(mirror) {
+  if (!mirror || typeof mirror !== 'object') return null;
+  let url = String(mirror.resolverUrl || '').trim();
+  if (url.startsWith('//')) url = 'https:' + url;
+  // The web client can only play/proxy HTTP(S). Magnet, acestream and other
+  // torrent-style URIs are native-app features and must not become dead buttons.
+  if (!/^https?:\/\//i.test(url)) return null;
+  return { ...mirror, resolverUrl: url };
+}
+
+function normalizeWebRelease(release, name) {
+  if (!release || typeof release !== 'object') return null;
+  const mirrors = (Array.isArray(release.mirrors) ? release.mirrors : [])
+    .map(normalizeWebMirror)
+    .filter(Boolean);
+  if (mirrors.length === 0) return null;
+  return {
+    ...release,
+    mirrors,
+    provider: release.provider || registry[name]?.displayName || name,
+  };
+}
+
 async function getStreams(id, providerName = 'movieBoxWeb', opts = {}) {
   const collect = (releases, name) =>
     (releases || [])
-      .filter(Boolean)
-      .map((r) => ({
-        ...r,
-        provider: r.provider || registry[name]?.displayName || name,
-      }));
+      .map((release) => normalizeWebRelease(release, name))
+      .filter(Boolean);
 
   const timeoutMs = Number.isInteger(opts.timeoutMs) ? Math.max(1000, opts.timeoutMs) : 30000;
   const tried = new Set([providerName]);
@@ -673,10 +706,14 @@ async function getStreams(id, providerName = 'movieBoxWeb', opts = {}) {
           if (!Array.isArray(searchItems) || searchItems.length === 0) continue;
 
           // Find closest title match
-          const matchedItem = searchItems.find((it) => {
-            const itClean = cleanTitleForDeduplication(it.title) || normalizeTitle(it.title);
-            return itClean.includes(cleanTargetTitle) || cleanTargetTitle.includes(itClean);
-          }) || searchItems[0];
+          // Never auto-play the first unrelated search hit. Fallback is only
+          // safe when the candidate title actually matches the requested title.
+          const matchedItem = cleanTargetTitle
+            ? searchItems.find((it) => {
+              const itClean = cleanTitleForDeduplication(it.title) || normalizeTitle(it.title);
+              return itClean && (itClean.includes(cleanTargetTitle) || cleanTargetTitle.includes(itClean));
+            })
+            : null;
 
           if (matchedItem && matchedItem.subjectId) {
             const fbReleases = collect(
@@ -1003,4 +1040,5 @@ module.exports = {
   normalizeTitleForMatch,
   isTitleMatchForSeriesQuery,
   rankEpisodeCandidates,
+  normalizeWebRelease,
 };

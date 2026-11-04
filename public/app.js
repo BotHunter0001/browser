@@ -40,6 +40,13 @@ let autoSwitchResolutionPending = false;
 let autoSwitchGeneration = 0;
 let autoSwitchCandidates = [];
 let autoSwitchBaseTitle = '';
+let autoSwitchController = null;
+
+function cancelAutoSwitchResolution() {
+  autoSwitchController?.abort();
+  autoSwitchController = null;
+  autoSwitchResolutionPending = false;
+}
 
 // ── Download manager state (Vega-inspired) ──────────────────────────────
 let downloads = [];          // array of download records from the server
@@ -396,6 +403,7 @@ const openStreamNewTab = document.getElementById('openStreamNewTab');
 const closePlayerBtn = document.getElementById('closePlayerBtn');
 const subtitleSelect = document.getElementById('subtitleSelect');
 const subtitleStatus = document.getElementById('subtitleStatus');
+const audioSelect = document.getElementById('audioSelect');
 const playbackRateSelect = document.getElementById('playbackRateSelect');
 const videoPlayerContainer = document.getElementById('videoPlayerContainer');
 const playerLoading = document.getElementById('playerLoading');
@@ -407,8 +415,10 @@ const playerPlayBtn = document.getElementById('playerPlayBtn');
 const playerPlayIcon = document.getElementById('playerPlayIcon');
 const playerPauseIcon = document.getElementById('playerPauseIcon');
 const playerMuteBtn = document.getElementById('playerMuteBtn');
+const playerVolume = document.getElementById('playerVolume');
 const playerVolumeIcon = document.getElementById('playerVolumeIcon');
 const playerMutedIcon = document.getElementById('playerMutedIcon');
+const playerFitBtn = document.getElementById('playerFitBtn');
 const playerBackBtn = document.getElementById('playerBackBtn');
 const playerForwardBtn = document.getElementById('playerForwardBtn');
 const playerCaptionsBtn = document.getElementById('playerCaptionsBtn');
@@ -423,6 +433,49 @@ const sleepTimerSelect = document.getElementById('sleepTimerSelect');
 const autoNextToggle = document.getElementById('autoNextToggle');
 let playerControlsTimeout = null;
 let sleepTimerHandle = null;
+const PLAYER_VOLUME_KEY = 'cinesphere_player_volume';
+const PLAYER_FILL_KEY = 'cinesphere_player_fill';
+// Remembers the last chosen audio language across sessions (web mirror of the
+// Vega app's `lastAudioTrack` preference). 'auto' keeps the source default.
+const AUDIO_PREFERENCE_KEY = 'cinesphere_last_audio';
+
+function applyPlayerFill(enabled) {
+  if (!videoPlayerContainer) return;
+  videoPlayerContainer.classList.toggle('player-fill', enabled);
+  if (playerFitBtn) {
+    playerFitBtn.classList.toggle('active', enabled);
+    playerFitBtn.setAttribute('aria-pressed', String(enabled));
+    playerFitBtn.setAttribute('aria-label', enabled ? 'Fit video in frame' : 'Fill video frame');
+    playerFitBtn.title = enabled ? 'Fit video in frame (A)' : 'Fill video frame (A)';
+  }
+}
+const playerFillInitiallyEnabled = (() => {
+  try { return localStorage.getItem(PLAYER_FILL_KEY) === '1'; } catch { return false; }
+})();
+applyPlayerFill(playerFillInitiallyEnabled);
+
+function setPlayerVolume(percent) {
+  if (!videoPlayer) return;
+  const clamped = Math.max(0, Math.min(100, Number(percent) || 0));
+  videoPlayer.volume = clamped / 100;
+  videoPlayer.muted = clamped === 0;
+  if (playerVolume) playerVolume.value = String(Math.round(clamped));
+  try { localStorage.setItem(PLAYER_VOLUME_KEY, String(Math.round(clamped))); } catch { /* optional */ }
+  updatePlayerControls();
+}
+
+(() => {
+  try {
+    const raw = localStorage.getItem(PLAYER_VOLUME_KEY);
+    const saved = raw === null ? NaN : Number(raw);
+    if (Number.isFinite(saved) && saved >= 0 && saved <= 100) {
+      videoPlayer.volume = saved / 100;
+      videoPlayer.muted = saved === 0;
+      if (playerVolume) playerVolume.value = String(Math.round(saved));
+      updatePlayerControls();
+    }
+  } catch { /* localStorage can be unavailable in private mode. */ }
+})();
 
 function setPlayerLoading(loading, message = 'Loading stream...') {
   if (!playerLoading) return;
@@ -469,6 +522,9 @@ function updatePlayerControls() {
   if (playerMuteBtn) {
     playerMuteBtn.setAttribute('aria-label', muted ? 'Unmute' : 'Mute');
     playerMuteBtn.title = muted ? 'Unmute' : 'Mute';
+  }
+  if (playerVolume && document.activeElement !== playerVolume) {
+    playerVolume.value = String(Math.round((muted ? 0 : videoPlayer.volume) * 100));
   }
 
   const isFullscreen = document.fullscreenElement === videoPlayerContainer;
@@ -542,7 +598,26 @@ playerPlayBtn?.addEventListener('click', () => {
 });
 
 playerMuteBtn?.addEventListener('click', () => {
-  if (videoPlayer) videoPlayer.muted = !videoPlayer.muted;
+  if (!videoPlayer) return;
+  if (videoPlayer.muted) {
+    videoPlayer.muted = false;
+    if (videoPlayer.volume === 0) setPlayerVolume(60);
+  } else {
+    videoPlayer.muted = true;
+  }
+  updatePlayerControls();
+});
+
+playerVolume?.addEventListener('input', () => {
+  setPlayerVolume(playerVolume.value);
+});
+
+playerFitBtn?.addEventListener('click', () => {
+  if (!videoPlayerContainer) return;
+  const enabled = !videoPlayerContainer.classList.contains('player-fill');
+  applyPlayerFill(enabled);
+  try { localStorage.setItem(PLAYER_FILL_KEY, enabled ? '1' : '0'); } catch { /* optional */ }
+  showPlayerControls();
 });
 
 playerBackBtn?.addEventListener('click', () => {
@@ -622,24 +697,68 @@ playerFullscreenBtn?.addEventListener('click', async () => {
 videoPlayerContainer?.addEventListener('pointermove', showPlayerControls);
 videoPlayerContainer?.addEventListener('pointerdown', showPlayerControls);
 
-videoPlayerContainer?.addEventListener('keydown', (event) => {
-  if (event.target !== videoPlayer) return;
+function isPlayerShortcutTarget(target) {
+  if (!target || target === document.body || target === document.documentElement) return true;
+  const tag = String(target.tagName || '').toLowerCase();
+  if (target.isContentEditable) return false;
+  return !['input', 'select', 'textarea', 'button', 'a', 'summary'].includes(tag);
+}
+
+document.addEventListener('keydown', (event) => {
+  if (!videoPlayer || !playerContainer || playerContainer.classList.contains('hidden')) return;
+  if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+  if (document.fullscreenElement && document.fullscreenElement !== videoPlayerContainer) return;
+  if (!isPlayerShortcutTarget(event.target)) return;
+
+  const key = String(event.key || '');
+  const lower = key.toLowerCase();
   let seekBy = 0;
-  if (event.key === 'ArrowLeft') seekBy = -10;
-  if (event.key === 'ArrowRight') seekBy = 10;
+  let volumeBy = 0;
+  if (key === 'ArrowLeft' || lower === 'j') seekBy = event.shiftKey ? -30 : -10;
+  if (key === 'ArrowRight' || lower === 'l') seekBy = event.shiftKey ? 30 : 10;
+  if (key === 'ArrowUp') volumeBy = 5;
+  if (key === 'ArrowDown') volumeBy = -5;
+
   if (seekBy && Number.isFinite(videoPlayer.duration)) {
     event.preventDefault();
     videoPlayer.currentTime = Math.max(0, Math.min(videoPlayer.duration, videoPlayer.currentTime + seekBy));
-  } else if (event.key === ' ' || event.key.toLowerCase() === 'k') {
+  } else if (volumeBy) {
+    event.preventDefault();
+    setPlayerVolume(videoPlayer.volume * 100 + volumeBy);
+  } else if (key === ' ' || lower === 'k') {
     event.preventDefault();
     playerPlayBtn?.click();
-  } else if (event.key.toLowerCase() === 'm') {
+  } else if (key === 'Home' && Number.isFinite(videoPlayer.duration)) {
+    event.preventDefault();
+    videoPlayer.currentTime = 0;
+  } else if (key === 'End' && Number.isFinite(videoPlayer.duration)) {
+    event.preventDefault();
+    videoPlayer.currentTime = videoPlayer.duration;
+  } else if (lower === 'm') {
     event.preventDefault();
     playerMuteBtn?.click();
-  } else if (event.key.toLowerCase() === 'f') {
+  } else if (lower === 'f') {
     event.preventDefault();
     playerFullscreenBtn?.click();
+  } else if (lower === 'p') {
+    event.preventDefault();
+    playerPipBtn?.click();
+  } else if (lower === 'c') {
+    event.preventDefault();
+    playerCaptionsBtn?.click();
+  } else if (lower === 'a') {
+    event.preventDefault();
+    playerFitBtn?.click();
+  } else if (lower === 's') {
+    event.preventDefault();
+    playerSettingsBtn?.click();
+  } else if (key === 'Escape' && playerSettingsMenu && !playerSettingsMenu.classList.contains('hidden')) {
+    playerSettingsMenu.classList.add('hidden');
+    playerSettingsBtn?.setAttribute('aria-expanded', 'false');
+  } else {
+    return;
   }
+  showPlayerControls();
 });
 
 // Gateway host info
@@ -2043,6 +2162,7 @@ seriesSeasonsList?.addEventListener('click', (e) => {
  * Calls GET /api/streams/:id?provider=<provider>
  */
 async function loadStreams(id, provider = 'addon', episodeContext = null) {
+  cancelAutoSwitchResolution();
   autoSwitchGeneration += 1;
   autoSwitchResolutionPending = false;
   // Remember which media these streams belong to (used for auto-fallback on failure)
@@ -2406,9 +2526,172 @@ function setSubtitleTracks(subtitles) {
   updatePlayerControls();
 }
 
+/**
+ * Audio track switching — the web counterpart of the Vega app's audio
+ * selector. Two runtimes are supported:
+ *   • hls.js  — `hls.audioTracks` (multi-audio HLS master playlists with
+ *               #EXT-X-MEDIA renditions, e.g. dual-audio anime/drama sources)
+ *   • Safari  — HTMLMediaElement.audioTracks (native HLS via WebKit)
+ * MP4 sources with muxed multi-audio never expose switchable tracks in the
+ * browser, so the selector stays disabled and mirror-level language picks
+ * (castle per-language mirrors etc.) remain the way to change audio there.
+ */
+let currentAudioTracks = [];        // [{ value, label, token, isDefault }]
+let audioPreferenceApplied = false; // true once the saved preference was applied for this source
+
+function savedAudioPreference() {
+  try {
+    const value = localStorage.getItem(AUDIO_PREFERENCE_KEY);
+    return typeof value === 'string' && value !== '' ? value : 'auto';
+  } catch {
+    return 'auto';
+  }
+}
+
+function resetAudioTrackUi() {
+  currentAudioTracks = [];
+  audioPreferenceApplied = false;
+  if (audioSelect) {
+    const autoOption = document.createElement('option');
+    autoOption.value = 'auto';
+    autoOption.textContent = 'Default';
+    audioSelect.replaceChildren(autoOption);
+    audioSelect.value = 'auto';
+    audioSelect.disabled = true;
+  }
+  updatePlayerControls();
+}
+
+/**
+ * Rebuilds the audio select from a normalized track list.
+ * Returns true when the select now exposes switchable tracks.
+ */
+function populateAudioSelect(tracks) {
+  if (!audioSelect) return false;
+  currentAudioTracks = Array.isArray(tracks) ? tracks.filter(Boolean) : [];
+  const autoOption = document.createElement('option');
+  autoOption.value = 'auto';
+  autoOption.textContent = 'Default';
+  audioSelect.replaceChildren(autoOption);
+
+  let preselect = '';
+  const saved = audioPreferenceApplied ? '' : savedAudioPreference();
+  currentAudioTracks.forEach((track, index) => {
+    const option = document.createElement('option');
+    option.value = track.value;
+    option.textContent = track.label;
+    option.dataset.audioDefault = String(Boolean(track.isDefault));
+    audioSelect.add(option);
+    if (!preselect && saved && saved !== 'auto' && track.token === saved) {
+      preselect = track.value;
+    }
+  });
+
+  const switchable = currentAudioTracks.length > 1;
+  audioSelect.disabled = !switchable;
+  if (preselect) {
+    audioSelect.value = preselect;
+    audioPreferenceApplied = true;
+    applyAudioSelection(audioSelect.value); // apply saved language for this source
+  } else {
+    audioSelect.value = 'auto';
+  }
+  updatePlayerControls();
+  return switchable;
+}
+
+/** Persist + apply an audio selection against the active runtime. */
+function applyAudioSelection(value) {
+  const isHls = Boolean(
+    hlsPlayerInstance && Array.isArray(hlsPlayerInstance.audioTracks) && hlsPlayerInstance.audioTracks.length
+  );
+  if (isHls) {
+    if (value === 'auto' || value === '') {
+      const defaultValue = firstDefaultAudioTrackValue(hlsPlayerInstance);
+      if (defaultValue !== null) hlsPlayerInstance.audioTrack = defaultValue;
+    } else {
+      const trackId = Number(value);
+      if (Number.isFinite(trackId)) hlsPlayerInstance.audioTrack = trackId;
+    }
+  } else if (videoPlayer && typeof videoPlayer.audioTracks === 'object' && videoPlayer.audioTracks) {
+    const nativeTracks = Array.from(videoPlayer.audioTracks);
+    if (!nativeTracks.length) return;
+    nativeTracks.forEach((track, index) => {
+      const trackValue = String(track.id ?? index);
+      track.enabled = value === trackValue;
+    });
+  } else {
+    return; // nothing to switch on muxed MP4 audio
+  }
+
+  const meta = currentAudioTracks.find((track) => track.value === value);
+  try {
+    localStorage.setItem(AUDIO_PREFERENCE_KEY, value === 'auto' || !meta ? 'auto' : meta.token);
+  } catch { /* optional */ }
+  audioPreferenceApplied = true;
+  updatePlayerControls();
+}
+
+/** hls.js 'auto' resolves to the rendition flagged default/autoselect, else track 0. */
+function firstDefaultAudioTrackValue(hls) {
+  const list = hls.audioTracks || [];
+  if (!list.length) return null;
+  const defIndex = list.findIndex((t) => t && (t.default || t.autoselect));
+  const track = defIndex !== -1 ? list[defIndex] : list[0];
+  const id = track && track.id !== undefined ? track.id : (defIndex !== -1 ? defIndex : 0);
+  const parsed = Number(id);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/** Keeps currentAudioTracks/select in sync with the active hls.js instance. */
+function syncHlsAudioTracks(hls) {
+  if (!hls || !Array.isArray(hls.audioTracks)) return;
+  const tracks = hls.audioTracks.map((track, index) => {
+    const language = String(track.language || '').trim();
+    const name = String(track.name || '').trim();
+    const label = [
+      name || language || `Audio ${index + 1}`,
+      language && language.toUpperCase() !== name.toUpperCase() ? language.toUpperCase() : '',
+    ].filter(Boolean).join(' · ');
+    return {
+      value: String(track.id ?? index),
+      label,
+      token: (language || name).toLowerCase(),
+      isDefault: Boolean(track.default || track.autoselect),
+    };
+  });
+  populateAudioSelect(tracks);
+}
+
+/** Safari/WebKit path for native HLS playback. */
+function syncNativeAudioTracks() {
+  if (!videoPlayer || hlsPlayerInstance) return; // hls.js manages its own list
+  const nativeTracks = typeof videoPlayer.audioTracks === 'object' && videoPlayer.audioTracks
+    ? Array.from(videoPlayer.audioTracks)
+    : [];
+  if (!nativeTracks.length) return;
+  populateAudioSelect(
+    nativeTracks.map((track, index) => {
+      const language = String(track.language || '').trim();
+      const label = String(track.label || '').trim() || language.toUpperCase() || `Audio ${index + 1}`;
+      return {
+        value: String(track.id ?? index),
+        label,
+        token: (language || label).toLowerCase(),
+        isDefault: Boolean(track.enabled),
+      };
+    })
+  );
+}
+
+audioSelect?.addEventListener('change', () => applyAudioSelection(audioSelect.value));
+videoPlayer?.addEventListener('loadedmetadata', syncNativeAudioTracks);
+
 function playStreamSource(rawUrl, title, cookie = '', forceProxy = false, streamHeaders = null, subtitles = currentPlayback.subtitles, streamType = '') {
   if (!rawUrl) return;
 
+  // A manual source pick supersedes any provider-resolution request still in flight.
+  cancelAutoSwitchResolution();
   savePlaybackProgress();
   cancelAutoNext();
   // Always destroy any previous hls.js instance before loading a new source.
@@ -2417,6 +2700,7 @@ function playStreamSource(rawUrl, title, cookie = '', forceProxy = false, stream
     hlsStartupTimer = null;
   }
   destroyHls();
+  resetAudioTrackUi();
 
   // Normalize protocol-relative URLs (e.g. //host/path) that some mirrors return
   let url = String(rawUrl).trim();
@@ -2475,8 +2759,21 @@ function playStreamSource(rawUrl, title, cookie = '', forceProxy = false, stream
     if (typeof Hls !== 'undefined' && Hls.isSupported()) {
       const hls = new Hls({ startLevel: -1 }); // -1 = auto quality
       hlsPlayerInstance = hls;
+      // Dynamic/a-demuxed playlists resolve their audio renditions later.
+      hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => syncHlsAudioTracks(hls));
+      hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_, data) => {
+        if (!audioSelect || !data || data.id === undefined || data.id === null) return;
+        const value = String(data.id);
+        if (Array.from(audioSelect.options).some((option) => option.value === value)) {
+          audioSelect.value = value;
+          // Sync UI state but don't re-apply selection as it's already switched
+          audioPreferenceApplied = true;
+          updatePlayerControls();
+        }
+      });
 
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        syncHlsAudioTracks(hls); // multi-audio masters expose renditions here
         videoPlayer.play().catch((e) => console.warn('HLS play() blocked:', e?.name));
         hlsStartupTimer = setTimeout(() => {
           hlsStartupTimer = null;
@@ -2605,18 +2902,29 @@ async function autoSwitchToWorkingSource(failedUrl, generation = autoSwitchGener
   const { id, provider } = activeStreamContext;
   if (!id) return;
 
+  autoSwitchController?.abort();
+  const controller = new AbortController();
+  autoSwitchController = controller;
+  autoSwitchResolutionPending = true;
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, 40000);
+
   try {
     const titleParam = activeMedia?.title ? `&title=${encodeURIComponent(activeMedia.title)}` : '';
     const yearParam = activeMedia?.year ? `&year=${encodeURIComponent(activeMedia.year)}` : '';
     const typeParam = activeMedia?.type ? `&type=${encodeURIComponent(activeMedia.type)}` : '';
 
     const res = await fetch(
-      `/api/resolve-source?id=${encodeURIComponent(id)}&provider=${encodeURIComponent(provider || 'movieBoxWeb')}${titleParam}${yearParam}${typeParam}`
+      `/api/resolve-source?id=${encodeURIComponent(id)}&provider=${encodeURIComponent(provider || 'movieBoxWeb')}${titleParam}${yearParam}${typeParam}`,
+      { signal: controller.signal }
     );
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
 
     const data = await res.json();
-    if (generation !== autoSwitchGeneration) return;
+    if (generation !== autoSwitchGeneration || autoSwitchController !== controller) return;
     const pool = [data.source, ...(data.alternatives || [])]
       .filter((candidate) => candidate?.url && candidate.url !== failedUrl);
     const seen = new Set();
@@ -2627,10 +2935,18 @@ async function autoSwitchToWorkingSource(failedUrl, generation = autoSwitchGener
     });
     tryNextFallbackSource(failedUrl);
   } catch (err) {
+    if (err?.name === 'AbortError') {
+      if (timedOut && generation === autoSwitchGeneration) {
+        showError('Source switch timed out. Try another mirror or refresh the sources.');
+      }
+      return;
+    }
     if (generation === autoSwitchGeneration) {
       showError('Provider switch failed: ' + err.message);
     }
   } finally {
+    clearTimeout(timeout);
+    if (autoSwitchController === controller) autoSwitchController = null;
     if (generation === autoSwitchGeneration) autoSwitchResolutionPending = false;
   }
 }
@@ -2714,6 +3030,7 @@ function toggleStreamMode() {
 function closeVideoPlayer() {
   cancelAutoNext();
   clearSleepTimer();
+  cancelAutoSwitchResolution();
   autoSwitchGeneration += 1;
   autoSwitchResolutionPending = false;
   savePlaybackProgress();
@@ -2742,6 +3059,7 @@ function closeVideoPlayer() {
     subtitleSelect.disabled = true;
   }
   if (subtitleStatus) subtitleStatus.textContent = '';
+  resetAudioTrackUi();
   if (playbackRateSelect) playbackRateSelect.value = '1';
   if (videoPlayer) videoPlayer.playbackRate = 1;
   currentPlayback.subtitles = [];

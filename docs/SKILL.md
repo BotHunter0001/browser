@@ -81,7 +81,7 @@ Test successful and malformed search results, empty results, incorrect IDs, unav
 - Treat all provider-returned titles, descriptions, poster URLs, release fields, headers, and persisted browser data as untrusted.
 - Prefer DOM construction, `textContent`, and validated DOM properties over inserting dynamic values through `innerHTML`. If a template is unavoidable, escape for the exact HTML context and separately validate URL schemes/hosts. HTML escaping alone does not make a URL safe.
 - Never put arbitrary source URLs, cookies, or header objects directly into HTML attributes or inline event-handler code. Preserve the in-memory mirror-index/event-delegation approach where applicable.
-- Do not rely on the current Content Security Policy as a substitute for safe rendering; its script policy currently permits inline scripts.
+- Do not rely on the current Content Security Policy as a substitute for safe rendering. The current `script-src` is `'self'` only; inline scripts and inline event handlers are forbidden. hls.js is vendored locally and loaded with SRI.
 - Preserve visible loading, empty, error, no-source, and failed-source states. Keep playback and download controls wired to real handlers and meaningful API outcomes.
 - HLS playback is routed through `/api/proxy-hls` so nested playlists, segments, and key URIs can be rewritten. Account for redirects when resolving relative playlist references; do not bypass the proxy without verifying CORS and relative-URL behavior.
 

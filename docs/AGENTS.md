@@ -10,7 +10,7 @@ These project notes describe CineSphere Browser, a Node.js/Express application w
 - Verify directory contents before adding files. Make focused edits and preserve unrelated user changes.
 - Keep runtime secrets out of source control. `.env.example` is a template; the application does not load `.env` itself.
 - Do not represent provider availability, source correctness, or media rights as guaranteed by this application.
-- For code changes, run `npm run lint` and `npm run build`. There is no configured automated test script; document that limitation rather than claiming tests ran.
+- For code changes, run `npm test`, `npm run lint`, and `npm run build`. If a live-provider check is not possible, report that limitation rather than claiming provider availability.
 - For documentation-only changes, verify links and commands against the checked-in files and scripts.
 
 ## Code Conventions
@@ -24,6 +24,6 @@ These project notes describe CineSphere Browser, a Node.js/Express application w
 
 ## Validation
 
+- `npm test` runs the checked-in Node test suite with `node --test`.
 - `npm run lint` runs ESLint over root JavaScript files, `lib/**/*.js`, and `public/app.js`.
-- `npm run build` currently prints `Build ready`; it is not a bundling or compilation pipeline.
-- There is no `npm test` script or checked-in automated test suite configured in `package.json`.
+- `npm run build` rebuilds `public/tailwind.css`; it is not a bundling framework. The current Browserslist warning is tooling-only.

@@ -31,8 +31,10 @@ CineSphere Browser is a local browser interface for searching configured movie a
 
 - Users can request releases for a title or episode and see the provider, quality, format/codec, and mirrors returned by integrations.
 - The UI can play a selected mirror, download it through the server, or copy the source URL for an external player.
-- Playback defaults to the server proxy for compatibility, with a direct-play toggle. HLS playlists and their segment/key URLs are rewritten through the HLS proxy.
-- When a source fails, the client can ask the server to probe alternative sources and retry with a working result.
+- Playback defaults to the server proxy for compatibility, with a direct-play toggle. HLS playlists and their segment/key URLs are rewritten through the HLS proxy. hls.js is served locally so playback does not depend on a CDN.
+- The browser player includes play/pause, seek, volume, mute, playback speed, captions, sleep timer, auto-next preference, picture-in-picture, fullscreen, fill/fit mode, and keyboard shortcuts (Space/K, J/L, arrows, M, F, P, C, A, S). Volume and fill preference persist locally.
+- When a source fails, the client asks the server to probe alternative sources and retries with a working result. Probes validate real media bytes and HLS structure, not just HTTP 200.
+- Torrent-style (magnet/acestream) mirrors are native-only and are not exposed as web play/download actions.
 - Proxies support range requests where the upstream supports them, so seeking and large downloads do not require buffering the full response in memory.
 
 ### Operational Feedback
@@ -54,16 +56,18 @@ CineSphere Browser is a local browser interface for searching configured movie a
 
 - Provider sites and APIs are external and may change, block requests, or be unavailable; there is no uptime or source-validity guarantee.
 - Provider result quality and metadata completeness vary. Unified search is best-effort, and provider-priority ordering is not a relevance guarantee.
-- Application caches, rate-limit counters, and Vega key/value state are in memory only and reset when the process stops.
+- Application caches, rate-limit counters, and Vega key/value state are in memory only and reset when the process stops. Watch history/watchlist live in browser storage; download files and metadata persist on disk under `DOWNLOAD_DIR`.
 - There is no authentication or per-user state. The default server bind is localhost; exposing it to untrusted networks is not an intended secure deployment configuration.
-- `POST /api/hosts/rotate` and session gateway metadata are currently stubs, not actual gateway or token management.
-- The build command is a placeholder and no automated test suite is configured.
+- `POST /api/hosts/rotate` returns HTTP 501. Session gateway metadata reports `gatewayStatus: "unsupported"`; neither implements token/host rotation.
+- Provider availability is external. The download manager requires a persistent writable filesystem, so ephemeral/serverless deployments are unsupported.
+- `npm test`, `npm run lint`, and `npm run build` are the current verification commands. The build has a tooling-only Browserslist warning.
 
 ## Out of Scope
 
-- User accounts, authentication, profiles, watch history, favorites, or persistent libraries.
-- A database or durable server-side user state.
-- Media hosting, encoding, transcoding, or permanent storage.
+- User accounts, authentication, profiles, or durable server-side user state.
+- A database or shared multi-instance state.
+- Media hosting, encoding, transcoding, or a server-side media library.
+- Native-only capabilities: OS background downloads, cast/remote control, torrent streaming, on-device media scanning, TV focus navigation, and native notifications/updates.
 - Guaranteeing third-party provider uptime, source validity, or catalog completeness.
 - A new frontend framework, client-side router, or bundling pipeline without a separate product/engineering decision.
 - Real gateway rotation or token management until an upstream gateway integration is specified.
