@@ -65,6 +65,7 @@ class VegaAdapter {
     try {
       const ctrl = new AbortController();
       const timeout = setTimeout(() => ctrl.abort(), 5000);
+      let fallbackTimer = null;
 
       const defaultFilter = this.id === 'movieBoxWeb' ? '/' : (this.id === 'anikoto' ? '/most-viewed' : '');
       let cleanFilter = filter || defaultFilter;
@@ -75,43 +76,47 @@ class VegaAdapter {
           cleanFilter = '/' + cleanFilter;
         }
       }
-      const items = await Promise.race([
-        mod.getPosts({
-          filter: cleanFilter,
-          page,
-          signal: ctrl.signal,
-          providerContext,
-        }),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Vega catalog timeout')), 5000)
-        ),
-      ]);
-      clearTimeout(timeout);
+      try {
+        const items = await Promise.race([
+          mod.getPosts({
+            filter: cleanFilter,
+            page,
+            signal: ctrl.signal,
+            providerContext,
+          }),
+          new Promise((_, reject) => {
+            fallbackTimer = setTimeout(() => reject(new Error('Vega catalog timeout')), 5000);
+          }),
+        ]);
 
-      if (!Array.isArray(items)) return [];
+        if (!Array.isArray(items)) return [];
 
-      return items
-        .filter((item) => item && (item.title || item.name))
-        .map((item) => {
-          const rawTitle = item.title || item.name || 'Untitled';
-          const yearMatch = rawTitle.match(/\b(19\d{2}|20\d{2})\b/);
-          const year = yearMatch ? Number(yearMatch[1]) : (item.year ? Number(item.year) : null);
-          const isSeries =
-            item.type === 'series' ||
-            item.type === 'tv' ||
-            rawTitle.toLowerCase().includes('season') ||
-            rawTitle.toLowerCase().includes('s0');
+        return items
+          .filter((item) => item && (item.title || item.name))
+          .map((item) => {
+            const rawTitle = item.title || item.name || 'Untitled';
+            const yearMatch = rawTitle.match(/\b(19\d{2}|20\d{2})\b/);
+            const year = yearMatch ? Number(yearMatch[1]) : (item.year ? Number(item.year) : null);
+            const isSeries = this.category === 'anime' ||
+              item.type === 'series' ||
+              item.type === 'tv' ||
+              rawTitle.toLowerCase().includes('season') ||
+              rawTitle.toLowerCase().includes('s0');
 
-          return {
-            subjectId: item.link || item.id || rawTitle,
-            title: rawTitle,
-            year,
-            poster: item.image || item.poster || null,
-            type: isSeries ? 'series' : 'movie',
-            provider: this.id,
-            providerDisplayName: this.displayName,
-          };
-        });
+            return {
+              subjectId: item.link || item.id || rawTitle,
+              title: rawTitle,
+              year,
+              poster: item.image || item.poster || null,
+              type: isSeries ? 'series' : 'movie',
+              provider: this.id,
+              providerDisplayName: this.displayName,
+            };
+          });
+      } finally {
+        clearTimeout(timeout);
+        if (fallbackTimer) clearTimeout(fallbackTimer);
+      }
     } catch {
       return [];
     }
@@ -151,7 +156,7 @@ class VegaAdapter {
           const rawTitle = item.title || item.name || 'Untitled';
           const yearMatch = rawTitle.match(/\b(19\d{2}|20\d{2})\b/);
           const year = yearMatch ? Number(yearMatch[1]) : (item.year ? Number(item.year) : null);
-          const isSeries =
+          const isSeries = this.category === 'anime' ||
             item.type === 'series' ||
             item.type === 'tv' ||
             rawTitle.toLowerCase().includes('season') ||
@@ -178,25 +183,35 @@ class VegaAdapter {
       throw new Error(`${this.displayName}: meta module unavailable`);
     }
 
+    const isAnikoto = this.id === 'anikoto';
+    const timeoutMs = isAnikoto ? 17000 : 5000;
+    const requestContext = isAnikoto && typeof providerContext.axios.create === 'function'
+      ? {
+        ...providerContext,
+        axios: providerContext.axios.create({ timeout: 8000 }),
+      }
+      : providerContext;
     const ctrl = new AbortController();
-    const timeout = setTimeout(() => ctrl.abort(), 5000);
+    const timeout = setTimeout(() => ctrl.abort(), timeoutMs);
 
     let meta;
+    let fallbackTimer;
     try {
       meta = await Promise.race([
         mod.getMeta({
           link: id,
           signal: ctrl.signal,
-          providerContext,
+          providerContext: requestContext,
         }),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Vega meta timeout')), 5000)
-        ),
+        new Promise((_, reject) => {
+          fallbackTimer = setTimeout(() => reject(new Error('Vega meta timeout')), timeoutMs);
+        }),
       ]);
     } catch (err) {
       throw new Error(`${this.displayName} details failed: ${err.message}`);
     } finally {
       clearTimeout(timeout);
+      if (fallbackTimer) clearTimeout(fallbackTimer);
     }
 
     if (!meta) throw new Error(`${this.displayName}: getMeta returned no data`);
@@ -257,6 +272,10 @@ class VegaAdapter {
       type: isSeries ? 'series' : 'movie',
       seasons,
       linkList: meta.linkList || [],
+      cast: Array.isArray(meta.cast) ? meta.cast : (Array.isArray(meta.actors) ? meta.actors : []),
+      trailerUrl: meta.trailerUrl || meta.trailer || null,
+      imdbId: meta.imdbId || null,
+      tags,
       provider: this.id,
       providerDisplayName: this.displayName,
     };

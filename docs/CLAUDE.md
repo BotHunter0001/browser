@@ -8,8 +8,8 @@
 | Start server | `npm start` | Runs the same entry point as development. |
 | CLI search | `npm run cli -- "Dune"` | Searches providers and prints up to 15 results; defaults to `Inception`. |
 | Lint | `npm run lint` | ESLint; the current baseline may include warnings. |
-| Build check | `npm run build` | Currently prints `Build ready`; no frontend compilation occurs. |
-| Tests | Not configured | `package.json` has no test script. |
+| Build check | `npm run build` | Rebuilds Tailwind CSS and verifies the build pipeline. |
+| Tests | `npm test` | Node test runner: frontend contract, provider, netGuard, and download integration tests. |
 
 ## Verified Project Behavior
 
@@ -23,7 +23,7 @@
 ## Configuration and Cautions
 
 - Set `PORT` and `HOST` in the process environment. The server does not load `.env` automatically.
-- `ALLOW_PRIVATE_NETWORKS` defaults to allowing private network destinations for BDIX integrations. Loopback, link-local, and other explicitly blocked ranges remain blocked. The option is security-sensitive when exposing the server beyond a trusted machine or network.
+- `ALLOW_PRIVATE_NETWORKS` defaults to `false`; private-network destinations are enabled only when explicitly set to `true` (for approved BDIX integrations). Loopback, link-local, multicast, and other special-use ranges remain blocked. The option is security-sensitive when exposing the server beyond a trusted machine or network.
 - `FOURKDH_BASE` overrides the 4KHDHub base URL; its default is defined in `fourkdhhub.js`.
 - `.env.example` is the maintained environment template. Do not add credentials or private tokens to documentation or source.
 - Proxy URLs supplied by clients must continue through `safeFetch`; do not add arbitrary server-side fetch endpoints without equivalent URL validation.

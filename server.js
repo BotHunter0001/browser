@@ -1,31 +1,102 @@
 const express = require('express');
 const path = require('path');
 const { searchAll, getDetails, getStreams, getEpisodeStreams, getProvidersList, getCatalogHomepage, registry } = require('./providers');
-const { safeFetch } = require('./lib/netGuard');
+const { safeFetch, assertSafeUrl } = require('./lib/netGuard');
+const { probePlayableSource } = require('./lib/mediaProbe');
+const { wireClientAbort } = require('./lib/clientAbort');
 const { TTLCache } = require('./lib/cache');
+const {
+  enqueueDownloads,
+  getDownload,
+  getAllDownloads,
+  getDownloadFile,
+  removeDownload,
+  pauseDownload,
+  resumeDownload,
+  cancelDownload,
+  flushDownloads,
+  MAX_ITEMS_PER_REQUEST,
+} = require('./lib/downloads');
 
 const searchCache = new TTLCache({ ttlMs: 10 * 60 * 1000, max: 300 });
 const detailsCache = new TTLCache({ ttlMs: 30 * 60 * 1000, max: 500 });
 const streamsCache = new TTLCache({ ttlMs: 3 * 60 * 1000, max: 300 });
 const catalogCache = new TTLCache({ ttlMs: 15 * 60 * 1000, max: 200 });
+const suggestionsCache = new TTLCache({ ttlMs: 15 * 60 * 1000, max: 300 });
+
+const BROWSER_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 const app = express();
-// Read port/host from environment (falls back to defaults via .env-style usage)
+// Read port/host from environment. The default binding is localhost intentionally;
+// remote exposure must be configured explicitly.
 const PORT = parseInt(process.env.PORT, 10) || 3000;
-// Default to 0.0.0.0 to allow container and preview access
-const HOST = process.env.HOST || '0.0.0.0';
+const HOST = process.env.HOST || '127.0.0.1';
+
+const csp = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
+  "form-action 'self'",
+  "img-src 'self' data: blob: https: http:",
+  "media-src 'self' data: blob: https: http:",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' data: https://fonts.gstatic.com",
+  "script-src 'self'",
+  "connect-src 'self' https: http: data: blob:",
+  "worker-src 'self' blob:",
+  "manifest-src 'self'",
+  "upgrade-insecure-requests",
+].join('; ');
 
 app.disable('x-powered-by');
 app.use(express.json({ limit: '100kb' }));
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'no-referrer');
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-  res.setHeader('Pragma', 'no-cache');
-  res.setHeader('Expires', '0');
+  res.setHeader('Content-Security-Policy', csp);
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '0');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  if (req.path.startsWith('/api/')) {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+  }
   next();
 });
-app.use(express.static(path.join(__dirname, 'public'), { maxAge: 0, etag: false }));
+
+// Reject cross-site state-changing API calls. The app has no authentication,
+// so at minimum a random website must not be able to POST to the local server.
+app.use('/api', (req, res, next) => {
+  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
+  const fetchSite = String(req.headers['sec-fetch-site'] || '').toLowerCase();
+  if (fetchSite && !['same-origin', 'none'].includes(fetchSite)) {
+    return res.status(403).json({ error: 'Cross-site request rejected' });
+  }
+  const origin = req.headers.origin;
+  if (origin) {
+    try {
+      if (new URL(origin).host !== req.headers.host) {
+        return res.status(403).json({ error: 'Cross-origin request rejected' });
+      }
+    } catch {
+      return res.status(403).json({ error: 'Invalid origin' });
+    }
+  }
+  next();
+});
+
+// Fingerprinted assets are not used, so keep HTML uncached while allowing
+// short-lived browser caching for CSS/JS to avoid a full refetch on each page.
+app.use(express.static(path.join(__dirname, 'public'), {
+  etag: true,
+  maxAge: '5m',
+  setHeaders(res, filePath) {
+    if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-store');
+  },
+}));
 
 // Very small per-IP rate limiter for the expensive API routes
 const hits = new Map();
@@ -55,26 +126,67 @@ function clampInt(v, min, max, dflt) {
   return Number.isNaN(n) ? dflt : Math.min(max, Math.max(min, n));
 }
 function sendError(res, status, publicMsg, err) {
+  const effectiveStatus = Number.isInteger(err?.status) && err.status >= 400 && err.status < 500
+    ? err.status
+    : status;
+  const message = effectiveStatus === status ? publicMsg : String(err?.message || publicMsg);
   console.error(`[${publicMsg}]`, err?.message || err);
-  if (!res.headersSent) res.status(status).json({ error: publicMsg });
+  if (!res.headersSent) res.status(effectiveStatus).json({ error: message });
 }
-app.use('/api/search', rateLimit(60, 60000));
+function badRequest(message) {
+  return Object.assign(new Error(message), { status: 400 });
+}
+/**
+ * Provider IDs may be absolute URLs (shared scraper links). Validate the first
+ * hop before handing the value to a provider, otherwise a caller can point
+ * arbitrary provider fetchers at loopback/link-local/metadata services.
+ */
+async function guardProviderReference(value, label = 'Provider') {
+  const reference = String(value || '').trim();
+  if (!/^https?:\/\//i.test(reference)) return reference;
+  try {
+    await assertSafeUrl(reference);
+  } catch {
+    throw badRequest(`${label} reference is not allowed`);
+  }
+  return reference;
+}
+function buildStreamsCacheKey({ provider, id, title, year, type, minSources, alternateSources = [] }) {
+  return JSON.stringify([provider, id, title, year, type, minSources, alternateSources]);
+}
+app.use(['/api/search', '/api/suggestions'], rateLimit(60, 60000));
 app.use(['/api/streams', '/api/resolve-source', '/api/episode-streams'], rateLimit(40, 60000));
+app.use('/api/downloads', rateLimit(180, 60000));
 
 // 1. Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({ ok: true });
 });
 
-// Session info stub — returns active provider count for the header badge
+// Session metadata is intentionally minimal: there is no real authenticated
+// gateway/session system in this project. Expose the supported state accurately
+// instead of advertising a fake token or host rotation capability.
 app.get('/api/session', (req, res) => {
   const activeCount = Object.values(require('./providers').registry).filter(p => !p.disabled).length;
-  res.json({ ok: true, currentHost: null, providers: activeCount, tokenPreview: `${activeCount} providers` });
+  res.json({
+    ok: true,
+    currentHost: null,
+    providers: activeCount,
+    tokenPreview: null,
+    gatewayStatus: 'unsupported',
+    note: 'No authenticated gateway session is configured for this instance.'
+  });
 });
 
-// Gateway rotate stub — no-op for now, returns ok
+// Host rotation is unsupported by the current app and should not masquerade as a
+// real network rotation feature. Returning a clear unsupported response avoids
+// misleading front-end or operators into believing rotation is functional.
 app.post('/api/hosts/rotate', (req, res) => {
-  res.json({ ok: true });
+  res.status(501).json({
+    ok: false,
+    error: 'Host rotation is not implemented for this deployment.',
+    gatewayStatus: 'unsupported'
+  });
 });
 
 // 2. Providers list endpoint
@@ -89,6 +201,9 @@ app.get('/api/providers', (req, res) => {
 // card defaulted to "movie". Resolve the real type from details (bounded concurrency +
 // timeout), which also pre-warms the details cache for faster card opens.
 const TYPE_ENRICH_CONCURRENCY = 6;
+const TYPE_ENRICH_DETAIL_TIMEOUT_MS = 3500;
+const TYPE_ENRICH_TOTAL_BUDGET_MS = 6500;
+
 function hasUsableMediaDetails(details) {
   const title = String(details?.title || '').trim();
   return Boolean(
@@ -99,21 +214,41 @@ function hasUsableMediaDetails(details) {
   );
 }
 
+function withTimeout(promise, ms, message) {
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise).finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message || 'Operation timed out')), ms);
+      if (typeof timer.unref === 'function') timer.unref();
+    }),
+  ]);
+}
+
 async function enrichVegaTypes(items) {
+  // Catalog requests already know whether a shelf is movies or series, so only
+  // enrich entries whose type is unknown. This avoids dozens of detail fetches
+  // on every homepage load (the previous behaviour could hang for minutes).
   const targets = items.filter((item) =>
     item?.subjectId &&
     item.provider === 'movieBoxWeb' &&
+    !item.typeVerified &&
     /^\/moviesDetail\//i.test(String(item.subjectId))
   );
 
+  const deadline = Date.now() + TYPE_ENRICH_TOTAL_BUDGET_MS;
   let cursor = 0;
   let complete = true;
   const worker = async () => {
-    while (cursor < targets.length) {
+    while (cursor < targets.length && Date.now() < deadline) {
       const item = targets[cursor++];
       try {
-        const details = await detailsCache.wrap(`${item.provider}::${item.subjectId}`, () =>
-          registry[item.provider].instance.details(item.subjectId)
+        const details = await withTimeout(
+          detailsCache.wrap(`${item.provider}::${item.subjectId}`, () =>
+            registry[item.provider].instance.details(item.subjectId)
+          ),
+          TYPE_ENRICH_DETAIL_TIMEOUT_MS,
+          'Details enrichment timed out'
         );
         if (!hasUsableMediaDetails(details)) throw new Error('Provider returned unusable details');
         if (details.type === 'movie' || details.type === 'series') item.type = details.type;
@@ -133,6 +268,7 @@ async function enrichVegaTypes(items) {
   if (targets.length) {
     await Promise.all(Array.from({ length: Math.min(TYPE_ENRICH_CONCURRENCY, targets.length) }, worker));
   }
+  if (cursor < targets.length) complete = false;
   return complete;
 }
 
@@ -175,17 +311,64 @@ async function enrichCatalogTypes(data, genre = null) {
   return data;
 }
 
-// 2b. Catalog Homepage endpoint (supports multiple alias paths for maximum client/tester compatibility)
+// 2b. Multi-category catalog shelves (Vega Home Rows)
+app.get(['/api/catalog/rows', '/api/rows'], async (_req, res) => {
+  try {
+    const cached = await catalogCache.wrap('catalog::rows::all', async () => {
+      const rowDefinitions = [
+        { id: 'trending-movies', title: 'Trending Movies', provider: 'movieBoxWeb', filter: '/newWeb/movie', genre: 'movies' },
+        { id: 'popular-series', title: 'Popular TV Series', provider: 'movieBoxWeb', filter: '/newWeb/tv-series', genre: 'series' },
+        { id: 'top-anime', title: 'Top Anime', provider: 'anikoto', filter: '/most-viewed', genre: 'anime' },
+        { id: 'asian-drama', title: 'Asian Drama', provider: 'all', filter: '', genre: 'drama' },
+      ];
+
+      const loaded = await Promise.allSettled(rowDefinitions.map(async (row) => {
+        try {
+          const cat = await getCatalogHomepage(row.provider, row.filter, 1, row.genre);
+          const enriched = await enrichCatalogTypes(cat, row.genre);
+          return {
+            id: row.id,
+            title: row.title,
+            genre: row.genre,
+            provider: row.provider,
+            items: enriched.results || [],
+          };
+        } catch (err) {
+          console.warn(`[CatalogRows] Failed to load row "${row.title}":`, err.message);
+          return {
+            id: row.id,
+            title: row.title,
+            genre: row.genre,
+            provider: row.provider,
+            items: [],
+          };
+        }
+      }));
+
+      return loaded
+        .filter((r) => r.status === 'fulfilled' && r.value.items.length > 0)
+        .map((r) => r.value);
+    });
+
+    res.json({ ok: true, rows: cached || [] });
+  } catch (err) {
+    sendError(res, 500, 'Failed to load catalog rows', err);
+  }
+});
+
+// 2c. Catalog Homepage endpoint (supports multiple alias paths for maximum client/tester compatibility)
 app.get([
+  // Static aliases must be registered before /api/catalog/:provider; otherwise
+  // "homepage", "home" and "trending" are consumed as provider names.
   '/api/catalog',
   '/api/catalog/homepage',
   '/api/catalog/home',
   '/api/catalog/trending',
-  '/api/catalog/:provider',
   '/catalog/homepage',
   '/catalog/home',
   '/api/home',
   '/api/homepage',
+  '/api/catalog/:provider',
 ], async (req, res) => {
   const rawProv = cleanProvider(req.params.provider || req.query.provider, null);
   const genre = String(req.query.genre || req.query.type || '').trim().toLowerCase().slice(0, 30);
@@ -194,6 +377,9 @@ app.get([
   if ((!rawProv || rawProv === 'all') && genre === 'drama') provider = 'all';
   const filter = String(req.query.filter || (genre === 'drama' ? '' : genre)).trim().slice(0, 100);
   const page = clampInt(req.query.page, 1, 50, 1);
+  if (/^https?:\/\//i.test(filter)) {
+    return res.status(400).json({ error: 'Absolute catalog filters are not allowed' });
+  }
 
   try {
     const data = await catalogCache.wrap(
@@ -220,8 +406,11 @@ app.get('/manifest.json', (req, res) => {
     id: 'org.cinesphere.browser',
     version: '1.0.0',
     name: 'CineSphere Browser',
-    description: 'Unified multi-provider catalog and streaming engine',
-    resources: ['catalog', 'meta', 'stream'],
+    description: 'Unified multi-provider catalog browser (Stremio catalog bridge)',
+    // Only advertise resources that are actually implemented. Meta/stream
+    // handlers are intentionally omitted until provider IDs can round-trip
+    // through the Stremio protocol safely.
+    resources: ['catalog'],
     types: ['movie', 'series'],
     catalogs: [
       { type: 'movie', id: 'top', name: 'Top Movies' },
@@ -233,11 +422,21 @@ app.get('/manifest.json', (req, res) => {
 
 app.get(['/catalog/:type/:id.json', '/catalog/:type/:id/:extra.json'], async (req, res) => {
   const { type, id } = req.params;
+  if (!['movie', 'series'].includes(type)) {
+    return res.status(400).json({ error: 'Unsupported catalog type' });
+  }
+  if (!['top', 'trending'].includes(id)) {
+    return res.status(404).json({ error: 'Unknown catalog id' });
+  }
+  const filter = type === 'series' ? '/newWeb/tv-series' : '/newWeb/movie';
   try {
     const data = await catalogCache.wrap(`stremio::catalog::${type}::${id}`, () =>
-      getCatalogHomepage('movieBoxWeb', id === 'top' ? '/' : id, 1)
+      getCatalogHomepage('movieBoxWeb', filter, 1)
     );
-    res.json({ metas: data.metas });
+    const metas = (data.metas || [])
+      .filter((meta) => !meta.type || meta.type === type)
+      .map((meta) => ({ ...meta, type }));
+    res.json({ metas });
   } catch (err) {
     sendError(res, 500, 'Failed to load catalog homepage', err);
   }
@@ -266,7 +465,7 @@ app.get('/api/search', async (req, res) => {
         return { results, complete };
       },
       undefined,
-      (value) => value.complete
+      (value) => value.complete && Array.isArray(value.results) && value.results.length > 0
     );
     const results = cached.results;
     res.json({
@@ -283,6 +482,60 @@ app.get('/api/search', async (req, res) => {
   }
 });
 
+// 3b. Search suggestions (Vega IMDb autocomplete)
+app.get('/api/suggestions', async (req, res) => {
+  const q = String(req.query.q || req.query.query || '').trim();
+  if (q.length < 2) {
+    return res.json({ suggestions: [] });
+  }
+
+  try {
+    const list = await suggestionsCache.wrap(`sug::${q.toLowerCase()}`, async () => {
+      const clean = q.toLowerCase();
+      const firstChar = /^[a-z0-9]/.test(clean) ? clean.charAt(0) : 'x';
+      const url = `https://v3.sg.media-imdb.com/suggestion/titles/${encodeURIComponent(firstChar)}/${encodeURIComponent(clean)}.json`;
+
+      const response = await safeFetch(url, {
+        headers: { 'User-Agent': BROWSER_UA },
+        signal: AbortSignal.timeout(4000),
+      });
+      if (!response.ok) return [];
+
+      const json = await response.json();
+      const items = json?.d;
+      if (!Array.isArray(items)) return [];
+
+      const results = [];
+      const seen = new Set();
+      for (const item of items) {
+        const title = item?.l?.trim();
+        if (!title) continue;
+        const norm = (item.id || title).toLowerCase();
+        if (seen.has(norm)) continue;
+        seen.add(norm);
+
+        const itemQ = String(item?.q || '').toLowerCase();
+        const itemQid = String(item?.qid || '').toLowerCase();
+        const isTv = itemQid.startsWith('tv') || itemQid.includes('series') || itemQ.includes('tv') || itemQ.includes('series');
+
+        results.push({
+          id: item.id || norm,
+          title,
+          type: isTv ? 'series' : 'movie',
+          year: item?.y || null,
+          poster: typeof item?.i?.imageUrl === 'string' ? item.i.imageUrl : null,
+        });
+        if (results.length >= 8) break;
+      }
+      return results;
+    });
+
+    res.json({ suggestions: list || [] });
+  } catch {
+    res.json({ suggestions: [] });
+  }
+});
+
 // 4. Details endpoint with provider routing
 app.get('/api/details/:id', async (req, res) => {
   const id = String(req.params.id || '').slice(0, 500);
@@ -293,6 +546,7 @@ app.get('/api/details/:id', async (req, res) => {
   }
 
   try {
+    await guardProviderReference(id, 'Media');
     const details = await detailsCache.wrap(`${provider}::${id}`, () => getDetails(id, provider));
     res.json(details);
   } catch (err) {
@@ -326,7 +580,15 @@ app.get('/api/streams/:id', async (req, res) => {
   }
 
   try {
-    const cacheKey = `${provider}::${id}::${title}::${minSources}`;
+    await guardProviderReference(id, 'Media');
+    alternateSources = await Promise.all((Array.isArray(alternateSources) ? alternateSources : [])
+      .slice(0, 20)
+      .map(async (source) => (
+        source?.subjectId
+          ? { ...source, subjectId: await guardProviderReference(source.subjectId, 'Alternate media') }
+          : source
+      )));
+    const cacheKey = buildStreamsCacheKey({ provider, id, title, year, type, minSources, alternateSources });
     const releases = await streamsCache.wrap(cacheKey, () =>
       getStreams(id, provider, { minSources, maxFallbacks, title, year, type, alternateSources })
     );
@@ -352,7 +614,12 @@ app.post('/api/episode-streams', async (req, res) => {
   }
 
   try {
-    const result = await getEpisodeStreams(title, season, episode, candidates);
+    const guardedCandidates = await Promise.all(candidates.map(async (candidate) => (
+      candidate?.subjectId
+        ? { ...candidate, subjectId: await guardProviderReference(candidate.subjectId, 'Episode candidate') }
+        : candidate
+    )));
+    const result = await getEpisodeStreams(title, season, episode, guardedCandidates);
     res.json(result);
   } catch (err) {
     sendError(res, 500, 'Failed to find episode playback sources', err);
@@ -360,9 +627,6 @@ app.post('/api/episode-streams', async (req, res) => {
 });
 
 // Shared helpers for stream/download proxies
-const BROWSER_UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-
 function buildUpstreamHeaders(req, query) {
   const headers = { 'User-Agent': BROWSER_UA };
   if (req.headers.range) headers['Range'] = req.headers.range;
@@ -388,9 +652,14 @@ async function pipeStream(upstream, res, req, extraResponseHeaders = []) {
   res.status(upstream.status);
 
   const hopByHop = new Set(['connection', 'transfer-encoding', 'keep-alive', 'content-encoding']);
+  // Node's fetch transparently decompresses bodies. Forwarding the compressed
+  // content-length in that case makes browsers wait forever for missing bytes.
+  const contentEncoding = String(upstream.headers.get('content-encoding') || '').toLowerCase();
+  const skipLength = contentEncoding && contentEncoding !== 'identity';
   const forward = ['content-type', 'content-length', 'content-range', 'accept-ranges', 'last-modified', 'etag', ...extraResponseHeaders];
   for (const h of forward) {
     if (hopByHop.has(h.toLowerCase())) continue;
+    if (skipLength && h.toLowerCase() === 'content-length') continue;
     const val = upstream.headers.get(h);
     if (val) res.setHeader(h, val);
   }
@@ -407,6 +676,38 @@ async function pipeStream(upstream, res, req, extraResponseHeaders = []) {
   } catch (err) {
     if (err.code !== 'ERR_STREAM_PREMATURE_CLOSE' && err.name !== 'AbortError') throw err;
   }
+}
+
+async function readBodyLimited(upstream, maxBytes) {
+  const declared = Number(upstream.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    try { await upstream.body?.cancel(); } catch { /* ignore */ }
+    const error = new Error('Upstream response is too large');
+    error.status = 413;
+    throw error;
+  }
+  if (!upstream.body) return Buffer.alloc(0);
+
+  const reader = upstream.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        try { await reader.cancel(); } catch { /* ignore */ }
+        const error = new Error('Upstream response is too large');
+        error.status = 413;
+        throw error;
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    try { reader.releaseLock(); } catch { /* ignore */ }
+  }
+  return Buffer.concat(chunks, total);
 }
 
 const BLOCKED_STATUSES = new Set([401, 403, 426, 429]);
@@ -432,16 +733,15 @@ async function fetchMediaUpstream(targetUrl, req, signal) {
 
 function redirectToDirect(res, targetUrl) {
   if (!/^https?:\/\//i.test(String(targetUrl))) return false;
+  try {
+    const validated = new URL(String(targetUrl));
+    if (!['http:', 'https:'].includes(validated.protocol)) return false;
+  } catch {
+    return false;
+  }
   res.setHeader('Cache-Control', 'no-store');
   res.redirect(302, targetUrl);
   return true;
-}
-
-// Abort the upstream fetch when the client disconnects (video seeking / closing player)
-function wireClientAbort(req, res, controller) {
-  const abort = () => controller.abort();
-  req.on('close', abort);
-  res.on('finish', () => req.off('close', abort));
 }
 
 // 6. Direct Video Streaming Proxy (Range request support for smooth browser playback)
@@ -509,7 +809,9 @@ app.get('/api/play/:id', async (req, res) => {
   const year = req.query.year ? Number(req.query.year) : null;
   const type = String(req.query.type || 'movie').trim().slice(0, 20);
   try {
-    const releases = await streamsCache.wrap(`${provider}::${id}::${title}`, () =>
+    await guardProviderReference(id, 'Media');
+    const cacheKey = buildStreamsCacheKey({ provider, id, title, year, type, minSources: 1 });
+    const releases = await streamsCache.wrap(cacheKey, () =>
       getStreams(id, provider, { minSources: 1, title, year, type })
     );
     res.json({ subjectId: id, provider, releases });
@@ -532,36 +834,23 @@ app.get('/api/resolve-source', async (req, res) => {
   if (!id) return res.status(400).json({ error: 'Missing id parameter' });
 
   try {
+    await guardProviderReference(id, 'Media');
     // Gather sources from the preferred provider + fallbacks
     const releases = await getStreams(id, provider, { minSources: 2, maxFallbacks: 8, title, year, type });
     const candidates = [];
     for (const r of releases) {
       for (const m of r.mirrors || []) {
         if (m && m.resolverUrl && !/^https?:\/\/[^/]+\/api\//.test(m.resolverUrl)) {
-          candidates.push({ url: m.resolverUrl, headers: m.headers || null, cookie: m.signCookie || '', quality: r.quality, provider: r.provider });
+          candidates.push({ url: m.resolverUrl, headers: m.headers || null, cookie: m.signCookie || '', quality: r.quality, provider: r.provider, type: m.type || m.streamType || r.codec || '' });
         }
       }
     }
 
-    // Probe each candidate concurrently — first one that responds OK wins
-    const probes = candidates.slice(0, 20).map((c) =>
-      (async () => {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 10000);
-        try {
-          const upstream = await safeFetch(c.url, {
-            method: 'GET',
-            headers: { ...buildUpstreamHeaders({ headers: {} }, { headers: c.headers ? JSON.stringify(c.headers) : '', cookie: c.cookie }), Range: 'bytes=0-1023' },
-            signal: controller.signal,
-          });
-          const ok = upstream.ok || upstream.status === 206;
-          try { upstream.body?.cancel(); } catch { /* ignore */ }
-          if (!ok) throw new Error(`HTTP ${upstream.status}`);
-          return c;
-        } finally {
-          clearTimeout(timer);
-        }
-      })().catch(() => null)
+    // Probe actual media bytes, not just a URL that returns HTTP 200. The
+    // shared probe rejects challenge pages, images and invalid HLS playlists,
+    // and annotates real HLS sources so the player can choose the right path.
+    const probes = candidates.slice(0, 20).map((candidate) =>
+      probePlayableSource(candidate, { timeoutMs: 15000 })
     );
 
     const settled = await Promise.allSettled(probes);
@@ -570,6 +859,11 @@ app.get('/api/resolve-source', async (req, res) => {
       .map((s) => s.value);
 
     if (alive.length === 0) {
+      const reasons = settled
+        .filter((s) => s.status === 'rejected')
+        .slice(0, 3)
+        .map((s) => String(s.reason?.message || s.reason).slice(0, 120));
+      console.warn(`[resolve-source] No playable source for ${provider} (${candidates.length} tested): ${reasons.join(' | ')}`);
       return res.status(404).json({ error: 'No working source found on any provider', id, provider, tested: candidates.length });
     }
 
@@ -591,10 +885,7 @@ app.get('/api/proxy-hls', async (req, res) => {
     wireClientAbort(req, res, controller);
 
     const upstream = await safeFetch(targetUrl, {
-      headers: {
-        'User-Agent': BROWSER_UA,
-        ...(req.query.cookie ? { 'Cookie': String(req.query.cookie).slice(0, 4096) } : {}),
-      },
+      headers: buildUpstreamHeaders(req, req.query),
       signal: controller.signal,
     });
 
@@ -602,11 +893,14 @@ app.get('/api/proxy-hls', async (req, res) => {
       return res.status(upstream.status).send('Upstream HLS error');
     }
 
-    const raw = await upstream.text();
+    // Playlists should be small; cap the response so a hostile upstream cannot
+    // exhaust process memory. Use the final redirect URL as the base so
+    // relative segment paths resolve against the document that was served.
+    const raw = (await readBodyLimited(upstream, 5 * 1024 * 1024)).toString('utf8');
 
-    // Compute the base URL for resolving relative URIs in the playlist.
-    const base = new URL(targetUrl);
-    const baseDir = targetUrl.slice(0, targetUrl.lastIndexOf('/') + 1);
+    // Compute the base URL for resolving relative URIs in the playlist without
+    // losing query parameters or path segments from the upstream source.
+    const base = new URL(upstream.url || targetUrl);
 
     /**
      * Make any URI in the playlist absolute and then rewrite it so it routes
@@ -616,22 +910,25 @@ app.get('/api/proxy-hls', async (req, res) => {
     function rewriteUri(uri) {
       if (!uri || uri.startsWith('#')) return uri;
       uri = uri.trim();
-      // Already absolute?
+
       let absolute;
-      if (/^https?:\/\//i.test(uri)) {
-        absolute = uri;
-      } else if (uri.startsWith('//')) {
-        absolute = base.protocol + uri;
-      } else if (uri.startsWith('/')) {
-        absolute = `${base.protocol}//${base.host}${uri}`;
-      } else {
-        absolute = baseDir + uri;
+      try {
+        absolute = new URL(uri, base).toString();
+      } catch {
+        return uri;
       }
 
       // Route sub-playlists through proxy-hls, everything else through proxy-video
       const isPlaylist = /\.m3u8(\?|#|$)/i.test(absolute);
       const proxyBase = isPlaylist ? '/api/proxy-hls' : '/api/proxy-video';
-      return `${proxyBase}?url=${encodeURIComponent(absolute)}`;
+      const params = new URLSearchParams({ url: absolute });
+      if (typeof req.query.cookie === 'string' && req.query.cookie) {
+        params.set('cookie', req.query.cookie.slice(0, 4096));
+      }
+      if (typeof req.query.headers === 'string' && req.query.headers) {
+        params.set('headers', req.query.headers.slice(0, 8192));
+      }
+      return `${proxyBase}?${params.toString()}`;
     }
 
     // Rewrite the M3U8 line by line.
@@ -756,7 +1053,8 @@ app.get('/api/poster', async (req, res) => {
     const ct = upstream.headers.get('content-type') || 'image/jpeg';
     if (!ct.startsWith('image/')) return res.status(415).send('Not an image');
 
-    const buf = Buffer.from(await upstream.arrayBuffer());
+    const buf = await readBodyLimited(upstream, 10 * 1024 * 1024);
+    if (!buf.length) return res.status(502).send('Poster response is empty');
     posterCache.set(targetUrl, { buf, ct });
 
     res.setHeader('Content-Type', ct);
@@ -769,21 +1067,118 @@ app.get('/api/poster', async (req, res) => {
   }
 });
 
+// 11. Download manager (Vega-inspired). Reuses existing stream resolverUrls;
+// supports enqueue / pause / resume / cancel with progress + speed tracking.
+app.post('/api/downloads', async (req, res) => {
+  try {
+    const rawItems = Array.isArray(req.body) ? req.body : [req.body];
+    if (rawItems.length === 0 || rawItems.length > MAX_ITEMS_PER_REQUEST) {
+      return res.status(400).json({ error: `Provide between 1 and ${MAX_ITEMS_PER_REQUEST} downloads` });
+    }
+
+    const items = [];
+    for (const raw of rawItems) {
+      if (!raw || typeof raw !== 'object') {
+        return res.status(400).json({ error: 'Each download must be an object' });
+      }
+      const url = String(raw.url || '').trim();
+      if (!url) return res.status(400).json({ error: 'Each download requires a url' });
+      try {
+        await assertSafeUrl(url);
+      } catch (err) {
+        return res.status(400).json({ error: `Download URL is not allowed: ${err.message}` });
+      }
+      items.push({ ...raw, url });
+    }
+
+    const created = enqueueDownloads(items);
+    res.status(201).json({ downloads: created });
+  } catch (err) {
+    sendError(res, 500, 'Failed to enqueue download', err);
+  }
+});
+
+app.get('/api/downloads', (_req, res) => {
+  res.json({ downloads: getAllDownloads() });
+});
+
+app.get('/api/downloads/:id/file', (req, res) => {
+  const file = getDownloadFile(String(req.params.id));
+  if (!file) return res.status(404).json({ error: 'Completed download file not found' });
+  res.download(file.path, file.filename, (err) => {
+    if (err && !res.headersSent) {
+      console.error('[Download File Error]:', err.message);
+      res.status(500).json({ error: 'Could not send downloaded file' });
+    }
+  });
+});
+
+app.get('/api/downloads/:id', (req, res) => {
+  const item = getDownload(String(req.params.id));
+  if (!item) return res.status(404).json({ error: 'Download not found' });
+  res.json({ download: item });
+});
+
+app.post('/api/downloads/:id/pause', (req, res) => {
+  const ok = pauseDownload(String(req.params.id));
+  if (!ok) return res.status(409).json({ error: 'Download cannot be paused' });
+  res.json({ ok: true });
+});
+
+app.post('/api/downloads/:id/resume', (req, res) => {
+  const ok = resumeDownload(String(req.params.id));
+  if (!ok) return res.status(409).json({ error: 'Download cannot be resumed' });
+  res.json({ ok: true });
+});
+
+app.post('/api/downloads/:id/cancel', (req, res) => {
+  const ok = cancelDownload(String(req.params.id));
+  if (!ok) return res.status(404).json({ error: 'Download not found' });
+  res.json({ ok: true });
+});
+
+app.delete('/api/downloads/:id', async (req, res) => {
+  try {
+    const ok = await removeDownload(String(req.params.id));
+    if (!ok) return res.status(404).json({ error: 'Download not found' });
+    res.json({ ok: true });
+  } catch (err) {
+    sendError(res, 500, 'Could not remove download', err);
+  }
+});
+
 // Unknown API routes -> JSON 404 (not the HTML page)
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 
-// SPA fallback for HTML5 routing
+// SPA fallback for HTML5 routing. Do not return the HTML shell for missing
+// assets or non-HTML clients (that used to produce 200 text/html for /x.js).
 app.use((req, res) => {
+  // Missing assets must 404 even when the browser sends Accept: text/html.
+  // Only extensionless client-side routes should receive the SPA shell.
+  if (req.method !== 'GET' || path.extname(req.path) || !req.accepts('html')) {
+    return res.status(404).type('text/plain').send('Not found');
+  }
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 const server = app.listen(PORT, HOST, () => {
   console.log(`CineSphere Browser running at http://${HOST}:${PORT}`);
 });
-server.requestTimeout = 0; // long video streams must not be cut off
+// requestTimeout covers receiving the request, not streaming the response, so
+// long media playback is unaffected while slow-body uploads still time out.
+server.requestTimeout = 120000;
 server.headersTimeout = 30000;
+server.keepAliveTimeout = 15000;
+server.maxHeadersCount = 100; // allow Range/video-request headers without artificial limits
 
 process.on('unhandledRejection', (err) => console.error('[Unhandled Rejection]', err));
-const shutdown = () => server.close(() => process.exit(0));
+let shuttingDown = false;
+const shutdown = async () => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  try { await flushDownloads(); } catch { /* best effort */ }
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(1), 10000).unref();
+};
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);

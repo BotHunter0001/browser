@@ -19,6 +19,7 @@ let currentPlayback = {
   title: '',
   cookie: '',
   headers: null,
+  streamType: '',
   subtitles: [],
   isProxied: true,
   allowDirect: false,
@@ -29,19 +30,78 @@ let lastProgressSavedAt = 0;
 
 // Active hls.js instance (if any). Destroyed before each new source load.
 let hlsPlayerInstance = null;
+let hlsStartupTimer = null;
 // Tracks which media/provider the currently displayed streams came from, so a
 // failed playback can automatically re-resolve sources from another provider.
 let activeStreamContext = { id: '', provider: 'addon' };
 
-let autoSwitchTried = false;
+let autoSwitchResolutionTried = false;
+let autoSwitchResolutionPending = false;
+let autoSwitchGeneration = 0;
+let autoSwitchCandidates = [];
+let autoSwitchBaseTitle = '';
+let autoSwitchController = null;
+
+function cancelAutoSwitchResolution() {
+  autoSwitchController?.abort();
+  autoSwitchController = null;
+  autoSwitchResolutionPending = false;
+}
+
+// ── Download manager state (Vega-inspired) ──────────────────────────────
+let downloads = [];          // array of download records from the server
+let downloadsPollTimer = null; // polls progress while the Downloads tab is open
+
 // DOM Elements
 const searchForm = document.getElementById('searchForm');
 const searchInput = document.getElementById('searchInput');
 const searchBtn = document.getElementById('searchBtn');
 const searchBtnText = document.getElementById('searchBtnText');
 const searchSpinner = document.getElementById('searchSpinner');
+const searchSuggestionsDropdown = document.getElementById('searchSuggestionsDropdown');
+const dismissErrorBtn = document.getElementById('dismissErrorBtn');
 const heroSearchSection = document.getElementById('heroSearchSection');
-const providerSelect = document.getElementById('providerSelect');
+
+const POSTER_FALLBACK = `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(
+  "<svg xmlns='http://www.w3.org/2000/svg' width='300' height='450' fill='#111726'><rect width='300' height='450'/><text x='50%' y='50%' fill='#64748b' font-family='sans-serif' font-size='16' text-anchor='middle'>No Poster</text></svg>"
+)}`;
+
+/** Resolve an image URL, allowing only image data/http(s) URLs. */
+function normalizeImageUrl(value, fallback = '') {
+  const raw = String(value || '').trim();
+  if (!raw) return fallback;
+  try {
+    const parsed = new URL(raw, window.location.href);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return parsed.href;
+    if (parsed.protocol === 'data:' && /^data:image\//i.test(parsed.href)) return parsed.href;
+  } catch {
+    // Invalid URLs use the fallback.
+  }
+  return fallback;
+}
+
+/** Escape an image URL for an HTML attribute. */
+function safeImageUrl(value, fallback = '') {
+  return escapeHtml(normalizeImageUrl(value, fallback));
+}
+
+let toastTimer = null;
+function showToast(message, kind = 'info') {
+  let toast = document.getElementById('appToast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'appToast';
+    toast.className = 'app-toast';
+    toast.setAttribute('role', 'status');
+    toast.setAttribute('aria-live', 'polite');
+    document.body.appendChild(toast);
+  }
+  toast.textContent = String(message || '');
+  toast.classList.toggle('app-toast-error', kind === 'error');
+  toast.classList.add('app-toast-visible');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove('app-toast-visible'), 3200);
+}
 
 function showSearchHero() {
   if (heroSearchSection) {
@@ -123,6 +183,12 @@ const libHistoryBadge = document.getElementById('libHistoryBadge');
 const clearHistoryBtn = document.getElementById('clearHistoryBtn');
 const libraryWatchlistContainer = document.getElementById('libraryWatchlistContainer');
 const libraryHistoryContainer = document.getElementById('libraryHistoryContainer');
+const tabDownloadsBtn = document.getElementById('tabDownloadsBtn');
+const libDownloadsBadge = document.getElementById('libDownloadsBadge');
+const libraryDownloadsContainer = document.getElementById('libraryDownloadsContainer');
+const libraryExportBtn = document.getElementById('libraryExportBtn');
+const libraryImportBtn = document.getElementById('libraryImportBtn');
+const libraryImportFile = document.getElementById('libraryImportFile');
 const modalWatchlistBtn = document.getElementById('modalWatchlistBtn');
 
 const ALLOWED_AUDIO_LANGUAGES = new Set(['english', 'hindi', 'original']);
@@ -337,6 +403,7 @@ const openStreamNewTab = document.getElementById('openStreamNewTab');
 const closePlayerBtn = document.getElementById('closePlayerBtn');
 const subtitleSelect = document.getElementById('subtitleSelect');
 const subtitleStatus = document.getElementById('subtitleStatus');
+const audioSelect = document.getElementById('audioSelect');
 const playbackRateSelect = document.getElementById('playbackRateSelect');
 const videoPlayerContainer = document.getElementById('videoPlayerContainer');
 const playerLoading = document.getElementById('playerLoading');
@@ -348,8 +415,10 @@ const playerPlayBtn = document.getElementById('playerPlayBtn');
 const playerPlayIcon = document.getElementById('playerPlayIcon');
 const playerPauseIcon = document.getElementById('playerPauseIcon');
 const playerMuteBtn = document.getElementById('playerMuteBtn');
+const playerVolume = document.getElementById('playerVolume');
 const playerVolumeIcon = document.getElementById('playerVolumeIcon');
 const playerMutedIcon = document.getElementById('playerMutedIcon');
+const playerFitBtn = document.getElementById('playerFitBtn');
 const playerBackBtn = document.getElementById('playerBackBtn');
 const playerForwardBtn = document.getElementById('playerForwardBtn');
 const playerCaptionsBtn = document.getElementById('playerCaptionsBtn');
@@ -359,7 +428,54 @@ const playerPipBtn = document.getElementById('playerPipBtn');
 const playerFullscreenBtn = document.getElementById('playerFullscreenBtn');
 const playerFullscreenIcon = document.getElementById('playerFullscreenIcon');
 const playerExitFullscreenIcon = document.getElementById('playerExitFullscreenIcon');
+const queuePlayerStream = document.getElementById('queuePlayerStream');
+const sleepTimerSelect = document.getElementById('sleepTimerSelect');
+const autoNextToggle = document.getElementById('autoNextToggle');
 let playerControlsTimeout = null;
+let sleepTimerHandle = null;
+const PLAYER_VOLUME_KEY = 'cinesphere_player_volume';
+const PLAYER_FILL_KEY = 'cinesphere_player_fill';
+// Remembers the last chosen audio language across sessions (web mirror of the
+// Vega app's `lastAudioTrack` preference). 'auto' keeps the source default.
+const AUDIO_PREFERENCE_KEY = 'cinesphere_last_audio';
+
+function applyPlayerFill(enabled) {
+  if (!videoPlayerContainer) return;
+  videoPlayerContainer.classList.toggle('player-fill', enabled);
+  if (playerFitBtn) {
+    playerFitBtn.classList.toggle('active', enabled);
+    playerFitBtn.setAttribute('aria-pressed', String(enabled));
+    playerFitBtn.setAttribute('aria-label', enabled ? 'Fit video in frame' : 'Fill video frame');
+    playerFitBtn.title = enabled ? 'Fit video in frame (A)' : 'Fill video frame (A)';
+  }
+}
+const playerFillInitiallyEnabled = (() => {
+  try { return localStorage.getItem(PLAYER_FILL_KEY) === '1'; } catch { return false; }
+})();
+applyPlayerFill(playerFillInitiallyEnabled);
+
+function setPlayerVolume(percent) {
+  if (!videoPlayer) return;
+  const clamped = Math.max(0, Math.min(100, Number(percent) || 0));
+  videoPlayer.volume = clamped / 100;
+  videoPlayer.muted = clamped === 0;
+  if (playerVolume) playerVolume.value = String(Math.round(clamped));
+  try { localStorage.setItem(PLAYER_VOLUME_KEY, String(Math.round(clamped))); } catch { /* optional */ }
+  updatePlayerControls();
+}
+
+(() => {
+  try {
+    const raw = localStorage.getItem(PLAYER_VOLUME_KEY);
+    const saved = raw === null ? NaN : Number(raw);
+    if (Number.isFinite(saved) && saved >= 0 && saved <= 100) {
+      videoPlayer.volume = saved / 100;
+      videoPlayer.muted = saved === 0;
+      if (playerVolume) playerVolume.value = String(Math.round(saved));
+      updatePlayerControls();
+    }
+  } catch { /* localStorage can be unavailable in private mode. */ }
+})();
 
 function setPlayerLoading(loading, message = 'Loading stream...') {
   if (!playerLoading) return;
@@ -406,6 +522,9 @@ function updatePlayerControls() {
   if (playerMuteBtn) {
     playerMuteBtn.setAttribute('aria-label', muted ? 'Unmute' : 'Mute');
     playerMuteBtn.title = muted ? 'Unmute' : 'Mute';
+  }
+  if (playerVolume && document.activeElement !== playerVolume) {
+    playerVolume.value = String(Math.round((muted ? 0 : videoPlayer.volume) * 100));
   }
 
   const isFullscreen = document.fullscreenElement === videoPlayerContainer;
@@ -479,7 +598,26 @@ playerPlayBtn?.addEventListener('click', () => {
 });
 
 playerMuteBtn?.addEventListener('click', () => {
-  if (videoPlayer) videoPlayer.muted = !videoPlayer.muted;
+  if (!videoPlayer) return;
+  if (videoPlayer.muted) {
+    videoPlayer.muted = false;
+    if (videoPlayer.volume === 0) setPlayerVolume(60);
+  } else {
+    videoPlayer.muted = true;
+  }
+  updatePlayerControls();
+});
+
+playerVolume?.addEventListener('input', () => {
+  setPlayerVolume(playerVolume.value);
+});
+
+playerFitBtn?.addEventListener('click', () => {
+  if (!videoPlayerContainer) return;
+  const enabled = !videoPlayerContainer.classList.contains('player-fill');
+  applyPlayerFill(enabled);
+  try { localStorage.setItem(PLAYER_FILL_KEY, enabled ? '1' : '0'); } catch { /* optional */ }
+  showPlayerControls();
 });
 
 playerBackBtn?.addEventListener('click', () => {
@@ -559,29 +697,72 @@ playerFullscreenBtn?.addEventListener('click', async () => {
 videoPlayerContainer?.addEventListener('pointermove', showPlayerControls);
 videoPlayerContainer?.addEventListener('pointerdown', showPlayerControls);
 
-videoPlayerContainer?.addEventListener('keydown', (event) => {
-  if (event.target !== videoPlayer) return;
+function isPlayerShortcutTarget(target) {
+  if (!target || target === document.body || target === document.documentElement) return true;
+  const tag = String(target.tagName || '').toLowerCase();
+  if (target.isContentEditable) return false;
+  return !['input', 'select', 'textarea', 'button', 'a', 'summary'].includes(tag);
+}
+
+document.addEventListener('keydown', (event) => {
+  if (!videoPlayer || !playerContainer || playerContainer.classList.contains('hidden')) return;
+  if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+  if (document.fullscreenElement && document.fullscreenElement !== videoPlayerContainer) return;
+  if (!isPlayerShortcutTarget(event.target)) return;
+
+  const key = String(event.key || '');
+  const lower = key.toLowerCase();
   let seekBy = 0;
-  if (event.key === 'ArrowLeft') seekBy = -10;
-  if (event.key === 'ArrowRight') seekBy = 10;
+  let volumeBy = 0;
+  if (key === 'ArrowLeft' || lower === 'j') seekBy = event.shiftKey ? -30 : -10;
+  if (key === 'ArrowRight' || lower === 'l') seekBy = event.shiftKey ? 30 : 10;
+  if (key === 'ArrowUp') volumeBy = 5;
+  if (key === 'ArrowDown') volumeBy = -5;
+
   if (seekBy && Number.isFinite(videoPlayer.duration)) {
     event.preventDefault();
     videoPlayer.currentTime = Math.max(0, Math.min(videoPlayer.duration, videoPlayer.currentTime + seekBy));
-  } else if (event.key === ' ' || event.key.toLowerCase() === 'k') {
+  } else if (volumeBy) {
+    event.preventDefault();
+    setPlayerVolume(videoPlayer.volume * 100 + volumeBy);
+  } else if (key === ' ' || lower === 'k') {
     event.preventDefault();
     playerPlayBtn?.click();
-  } else if (event.key.toLowerCase() === 'm') {
+  } else if (key === 'Home' && Number.isFinite(videoPlayer.duration)) {
+    event.preventDefault();
+    videoPlayer.currentTime = 0;
+  } else if (key === 'End' && Number.isFinite(videoPlayer.duration)) {
+    event.preventDefault();
+    videoPlayer.currentTime = videoPlayer.duration;
+  } else if (lower === 'm') {
     event.preventDefault();
     playerMuteBtn?.click();
-  } else if (event.key.toLowerCase() === 'f') {
+  } else if (lower === 'f') {
     event.preventDefault();
     playerFullscreenBtn?.click();
+  } else if (lower === 'p') {
+    event.preventDefault();
+    playerPipBtn?.click();
+  } else if (lower === 'c') {
+    event.preventDefault();
+    playerCaptionsBtn?.click();
+  } else if (lower === 'a') {
+    event.preventDefault();
+    playerFitBtn?.click();
+  } else if (lower === 's') {
+    event.preventDefault();
+    playerSettingsBtn?.click();
+  } else if (key === 'Escape' && playerSettingsMenu && !playerSettingsMenu.classList.contains('hidden')) {
+    playerSettingsMenu.classList.add('hidden');
+    playerSettingsBtn?.setAttribute('aria-expanded', 'false');
+  } else {
+    return;
   }
+  showPlayerControls();
 });
 
 // Gateway host info
 const sessionHostBadge = document.getElementById('sessionHostBadge');
-const rotateHostBtn = document.getElementById('rotateHostBtn');
 
 // Provider badge styling mapping
 const providerStyles = {
@@ -602,6 +783,109 @@ const providerStyles = {
     badgeClass: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
   },
 };
+
+// ==========================================
+// VEGA-STYLE CONTINUE WATCHING STRIP
+// Reads from cinesphere_history (already tracked) and renders
+// resume cards above the catalog. 85% threshold = "watched".
+// ==========================================
+const CONTINUE_WATCHING_THRESHOLD_MIN = 0.05; // > 5% played
+const CONTINUE_WATCHING_THRESHOLD_MAX = 0.92; // < 92% played (not finished)
+
+/** Returns history items that are in-progress (5%–92% complete). */
+function getContinueWatchingItems() {
+  try {
+    const history = JSON.parse(localStorage.getItem('cinesphere_history') || '[]');
+    return history
+      .filter((item) => {
+        const p = Number(item.progressSeconds) || 0;
+        const d = Number(item.durationSeconds) || 0;
+        if (!d || p <= 0) return false;
+        const ratio = p / d;
+        return ratio >= CONTINUE_WATCHING_THRESHOLD_MIN && ratio < CONTINUE_WATCHING_THRESHOLD_MAX;
+      })
+      .sort((a, b) => (b.watchedAt || 0) - (a.watchedAt || 0))
+      .slice(0, 20);
+  } catch {
+    return [];
+  }
+}
+
+/** Renders / refreshes the continue-watching strip on the homepage. */
+function renderContinueWatchingStrip() {
+  const section = document.getElementById('continueWatchingSection');
+  const strip = document.getElementById('continueWatchingStrip');
+  if (!section || !strip) return;
+
+  const items = getContinueWatchingItems();
+  if (items.length === 0) {
+    section.classList.add('hidden');
+    return;
+  }
+  section.classList.remove('hidden');
+
+  strip.innerHTML = items.map((item) => {
+    const pct = Math.min(100, Math.max(0, Math.round(
+      (Number(item.progressSeconds) / Number(item.durationSeconds)) * 100
+    )));
+    const remaining = Math.max(0, Number(item.durationSeconds) - Number(item.progressSeconds));
+    const remText = remaining > 60
+      ? `${Math.round(remaining / 60)}m left`
+      : `${Math.round(remaining)}s left`;
+    const poster = item.poster
+      ? `/api/poster?url=${encodeURIComponent(item.poster)}`
+      : '';
+    const safeTitle = escapeHtml(item.title || 'Untitled');
+    const streamTitle = item.streamTitle ? escapeHtml(item.streamTitle) : '';
+    const isSeries = item.type === 'series' || item.seasonNumber;
+    const episodeLine = isSeries && (item.seasonNumber || item.episodeNumber)
+      ? `S${escapeHtml(String(item.seasonNumber || 1))}·E${escapeHtml(String(item.episodeNumber || 1))}`
+      : '';
+
+    return `
+      <div class="cw-card shrink-0 cursor-pointer group relative rounded-xl overflow-hidden border border-[#2f2924] bg-[#161412] hover:border-amber-500/40 transition-all duration-200 shadow-lg"
+           style="width:130px;"
+           data-action="cw-resume"
+           data-history-id="${escapeHtml(item.id)}"
+           data-subject-id="${escapeHtml(item.subjectId || item.id)}"
+           data-provider="${escapeHtml(item.provider || 'movieBoxWeb')}"
+           data-stream-subject-id="${escapeHtml(item.streamSubjectId || '')}"
+           data-stream-provider="${escapeHtml(item.streamProvider || item.provider || 'movieBoxWeb')}"
+           data-progress="${pct}"
+           title="${safeTitle}">
+        <!-- Poster -->
+        <div class="relative" style="aspect-ratio:2/3;">
+          ${poster
+            ? `<img src="${safeImageUrl(poster, POSTER_FALLBACK)}" alt="${safeTitle}" class="w-full h-full object-cover" loading="lazy">`
+            : `<div class="w-full h-full bg-[#211d19] flex items-center justify-center"><svg class="w-8 h-8 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 10l4.553-2.069A1 1 0 0121 8.82v6.361a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg></div>`}
+          <!-- Play overlay -->
+          <div class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
+            <div class="w-10 h-10 rounded-full bg-amber-500/90 flex items-center justify-center shadow-xl">
+              <svg class="w-5 h-5 text-black ml-0.5" fill="currentColor" viewBox="0 0 20 20"><path d="M6.3 2.841A1.5 1.5 0 004 4.11v11.78a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z"/></svg>
+            </div>
+          </div>
+          <!-- Progress bar -->
+          <div class="absolute bottom-0 left-0 right-0 h-1 bg-black/50">
+            <div class="h-full bg-amber-500 rounded-r-full transition-all" style="width:${pct}%"></div>
+          </div>
+        </div>
+        <!-- Info -->
+        <div class="p-2">
+          <p class="text-[11px] font-semibold text-white truncate leading-tight">${safeTitle}</p>
+          ${episodeLine ? `<p class="text-[10px] text-indigo-400 font-mono font-bold">${episodeLine}</p>` : ''}
+          ${streamTitle ? `<p class="text-[10px] text-slate-400 truncate">${streamTitle}</p>` : ''}
+          <p class="text-[10px] text-amber-400/80 font-mono mt-0.5">${remText}</p>
+        </div>
+        <!-- Remove button -->
+        <button class="cw-remove absolute top-1 right-1 w-5 h-5 rounded-full bg-black/70 text-slate-400 hover:text-white hover:bg-black/90 items-center justify-center hidden group-hover:flex transition text-[10px]"
+                data-action="cw-remove"
+                data-history-id="${escapeHtml(item.id)}"
+                title="Remove"
+                aria-label="Remove from continue watching">✕</button>
+      </div>
+    `;
+  }).join('');
+}
 
 // ==========================================
 // WATCHLIST & WATCH HISTORY (LOCALSTORAGE)
@@ -644,6 +928,7 @@ function saveStoredHistory(list) {
     console.warn('Failed to save history:', e);
   }
   updateHistoryBadges();
+  renderContinueWatchingStrip();
 }
 
 function isItemInWatchlist(subjectId) {
@@ -783,14 +1068,126 @@ function applyPendingResumePosition() {
   }
 }
 
+// Auto-next episode state (Vega-inspired: advance at WATCHED_FRACTION = 0.85)
+const WATCHED_FRACTION = 0.85;
+let autoNextTriggered = false;
+let autoNextCountdownTimer = null;
+let autoNextEpisodeContext = null;
+
+function cancelAutoNext() {
+  if (autoNextCountdownTimer) {
+    clearTimeout(autoNextCountdownTimer);
+    autoNextCountdownTimer = null;
+  }
+  autoNextEpisodeContext = null;
+  autoNextTriggered = false;
+  const overlay = document.getElementById('autoNextOverlay');
+  if (overlay) overlay.remove();
+}
+
+function triggerAutoNextCountdown(nextCtx) {
+  if (autoNextTriggered || !autoNextEnabled()) return;
+  autoNextTriggered = true;
+  autoNextEpisodeContext = nextCtx;
+
+  const playerSection = document.getElementById('playerSection');
+  if (playerSection) {
+    const old = document.getElementById('autoNextOverlay');
+    if (old) old.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'autoNextOverlay';
+    overlay.className = 'absolute bottom-16 right-4 z-50 p-3 bg-black/90 border border-amber-500/40 rounded-xl backdrop-blur-md shadow-2xl text-left';
+    overlay.style.minWidth = '220px';
+    overlay.innerHTML = `
+      <div class="text-[10px] font-bold text-amber-400 uppercase tracking-wider mb-1 flex items-center justify-between">
+        <span>Up Next (Auto-play in 7s)</span>
+        <button id="autoNextClose" class="text-slate-400 hover:text-white text-xs font-mono">✕</button>
+      </div>
+      <div class="text-xs text-white font-semibold mb-2.5 truncate" id="autoNextLabel">${escapeHtml(nextCtx.title || 'Next Episode')}</div>
+      <div class="flex items-center gap-2">
+        <button id="autoNextPlayNow" class="flex-1 py-1.5 px-3 bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs rounded-lg transition cursor-pointer">Play Now</button>
+        <button id="autoNextCancel" class="py-1.5 px-3 bg-white/10 hover:bg-white/20 text-slate-300 text-xs rounded-lg border border-white/10 transition cursor-pointer">Cancel</button>
+      </div>
+    `;
+    playerSection.style.position = 'relative';
+    playerSection.appendChild(overlay);
+
+    document.getElementById('autoNextPlayNow')?.addEventListener('click', () => {
+      cancelAutoNext();
+      playNextEpisode(nextCtx);
+    });
+    document.getElementById('autoNextCancel')?.addEventListener('click', cancelAutoNext);
+    document.getElementById('autoNextClose')?.addEventListener('click', cancelAutoNext);
+  }
+
+  autoNextCountdownTimer = setTimeout(() => {
+    cancelAutoNext();
+    if (!autoNextEnabled()) return;
+    playNextEpisode(nextCtx);
+  }, 7000);
+}
+
+async function playNextEpisode(ctx) {
+  if (!ctx) return;
+  try {
+    await loadStreams(ctx.streamId, ctx.provider, {
+      title: ctx.seriesTitle,
+      season: ctx.season,
+      episode: ctx.episode,
+    });
+    const firstPlayable = streamsList?.querySelector('[data-action="play-stream"]');
+    if (firstPlayable) firstPlayable.click();
+  } catch (err) {
+    showError('Auto-play could not load the next episode: ' + err.message);
+  }
+}
+
 videoPlayer?.addEventListener('loadedmetadata', applyPendingResumePosition);
 videoPlayer?.addEventListener('canplay', applyPendingResumePosition);
 videoPlayer?.addEventListener('timeupdate', () => {
-  if (!currentPlayback.historyId || Date.now() - lastProgressSavedAt < 5000) return;
-  lastProgressSavedAt = Date.now();
-  savePlaybackProgress();
+  if (currentPlayback.historyId && Date.now() - lastProgressSavedAt >= 5000) {
+    lastProgressSavedAt = Date.now();
+    savePlaybackProgress();
+  }
+
+  if (!autoNextEnabled()) return;
+  if (autoNextEpisodeContext && !autoNextTriggered) return;
+  if (autoNextTriggered) return;
+
+  const dur = videoPlayer.duration;
+  const pos = videoPlayer.currentTime;
+  if (!Number.isFinite(dur) || dur <= 0 || !Number.isFinite(pos)) return;
+
+  if (pos / dur >= WATCHED_FRACTION && activeStreamContext.episode != null) {
+    const allEpBtns = Array.from(document.querySelectorAll('[data-action="load-streams"][data-episode]'));
+    const curEp = Number(activeStreamContext.episode);
+    const curSeason = Number(activeStreamContext.season || 1);
+    const nextBtn = allEpBtns.find(btn =>
+      Number(btn.dataset.season || 1) === curSeason &&
+      Number(btn.dataset.episode) === curEp + 1
+    ) || allEpBtns.find(btn =>
+      Number(btn.dataset.season || 1) === curSeason + 1 &&
+      Number(btn.dataset.episode) === 1
+    );
+
+    if (nextBtn) {
+      const { streamId, provider: prov, epTitle, season, episode } = nextBtn.dataset;
+      triggerAutoNextCountdown({
+        streamId,
+        provider: prov,
+        title: `${epTitle ? epTitle + ' · ' : ''}S${season}·E${episode}`,
+        seriesTitle: epTitle,
+        season: parseInt(season, 10),
+        episode: parseInt(episode, 10),
+      });
+    }
+  }
 });
-videoPlayer?.addEventListener('ended', () => savePlaybackProgress(true));
+videoPlayer?.addEventListener('ended', () => {
+  savePlaybackProgress(true);
+  // Keep an already-visible auto-next countdown alive so the next episode can
+  // start even if the current file ends within the countdown window.
+});
 
 function removeHistoryItem(historyId, subjectId = historyId) {
   if (!historyId) return;
@@ -923,7 +1320,7 @@ function renderWatchlistTab() {
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
       ${list.map((item) => {
         const isSeries = item.type === 'series';
-        const posterUrl = item.poster || 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="300" height="450" fill="%23111726"><rect width="300" height="450"/><text x="50%" y="50%" fill="%2364748b" font-family="sans-serif" font-size="16" text-anchor="middle">No Poster</text></svg>';
+        const posterUrl = safeImageUrl(item.poster, POSTER_FALLBACK);
         const timeAgo = formatRelativeTime(item.addedAt);
 
         return `
@@ -1005,7 +1402,7 @@ function renderHistoryTab() {
     <div class="space-y-2">
       ${list.map((item) => {
         const subjectId = item.subjectId || item.id;
-        const posterUrl = item.poster || 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="300" height="450" fill="%23111726"><rect width="300" height="450"/><text x="50%" y="50%" fill="%2364748b" font-family="sans-serif" font-size="16" text-anchor="middle">No Poster</text></svg>';
+        const posterUrl = safeImageUrl(item.poster, POSTER_FALLBACK);
         const timeAgo = formatRelativeTime(item.watchedAt);
         const progress = Number(item.progressSeconds) > 0 && Number(item.durationSeconds) > 0
           ? Math.min(100, Math.max(0, Math.round((item.progressSeconds / item.durationSeconds) * 100)))
@@ -1066,6 +1463,232 @@ function renderHistoryTab() {
   `;
 }
 
+/** ── Download manager (Vega-inspired) ─────────────────────────────────── */
+
+async function fetchDownloads() {
+  try {
+    const res = await fetch('/api/downloads', { credentials: 'same-origin' });
+    if (!res.ok) return;
+    const data = await res.json().catch(() => ({ downloads: [] }));
+    downloads = Array.isArray(data.downloads) ? data.downloads : [];
+    updateDownloadsBadge();
+    if (activeLibraryTab === 'downloads') renderDownloadsTab();
+  } catch (err) {
+    console.warn('[Downloads] fetch failed:', err.message);
+  }
+}
+
+async function apiDownload(path, method = 'POST', body = null) {
+  const opts = { method, credentials: 'same-origin' };
+  if (body) opts.headers = { 'Content-Type': 'application/json' };
+  if (body && method !== 'GET') opts.body = JSON.stringify(body);
+  const res = await fetch('/api/downloads' + path, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Download request failed (HTTP ${res.status})`);
+  return data;
+}
+
+function startDownloadsPoll(intervalMs = 2000) {
+  if (downloadsPollTimer) return;
+  fetchDownloads();
+  downloadsPollTimer = setInterval(fetchDownloads, intervalMs);
+}
+
+function stopDownloadsPoll() {
+  if (downloadsPollTimer) {
+    clearInterval(downloadsPollTimer);
+    downloadsPollTimer = null;
+  }
+}
+
+function updateDownloadsBadge() {
+  const count = downloads.length;
+  if (libDownloadsBadge) libDownloadsBadge.textContent = String(count || 0);
+  if (libDownloadsBadge) libDownloadsBadge.className = `text-[10px] font-mono px-2 py-0.5 rounded-full ${count ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' : 'bg-[#211d19] text-slate-300 border border-[#2f2924]'}`;
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value <= 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.min(sizes.length - 1, Math.floor(Math.log(value) / Math.log(k)));
+  return parseFloat((value / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+function formatSpeed(bps) {
+  const value = Number(bps);
+  if (!Number.isFinite(value) || value <= 0) return '';
+  return formatBytes(value) + '/s';
+}
+
+function statusLabel(status) {
+  const map = { queued: 'Queued', downloading: 'Downloading', paused: 'Paused', completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled' };
+  return map[String(status || '').toLowerCase()] || 'Unknown';
+}
+
+function statusClass(status) {
+  const map = {
+    queued: 'text-amber-300',
+    downloading: 'text-emerald-300',
+    paused: 'text-slate-300',
+    completed: 'text-emerald-400',
+    failed: 'text-red-400',
+    cancelled: 'text-slate-500',
+  };
+  return map[String(status || '').toLowerCase()] || 'text-slate-400';
+}
+
+/** Stable id so queueing the same stream twice does not create duplicates. */
+function downloadIdFor(url, title) {
+  const input = `${url || ''}::${title || ''}`;
+  let hash = 2166136261;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `dl-${(hash >>> 0).toString(36)}`;
+}
+
+/** ── Download queue rendering (Vega-inspired) ─────────────────────────── */
+
+function renderDownloadsTab() {
+  if (!libraryDownloadsContainer) return;
+  updateDownloadsBadge();
+
+  if (downloads.length === 0) {
+    libraryDownloadsContainer.innerHTML = `
+      <div class="py-12 px-4 text-center space-y-3">
+        <div class="w-14 h-14 mx-auto rounded-2xl bg-[#1f1b17] border border-[#2f2924] flex items-center justify-center text-slate-500">
+          <svg class="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+          </svg>
+        </div>
+        <h4 class="text-sm font-bold text-slate-200">Download Queue is Empty</h4>
+        <p class="text-xs text-slate-400 max-w-sm mx-auto">
+          Queue a direct stream from any title's playback sources. Progress,
+          pause/resume, retry and cancel are supported here. HLS playlists cannot
+          be saved as a single file.
+        </p>
+      </div>
+    `;
+    return;
+  }
+
+  libraryDownloadsContainer.innerHTML = `
+    <div class="space-y-3">
+      ${downloads.map((d) => {
+        const status = String(d.status || '').toLowerCase();
+        const rawProgress = Number(d.progress);
+        const pct = Number.isFinite(rawProgress) ? Math.max(0, Math.min(100, Math.round(rawProgress))) : 0;
+        const isActive = status === 'downloading' || status === 'queued';
+        const isDone = status === 'completed';
+        const canResume = status === 'paused' || status === 'failed' || status === 'cancelled';
+        const canCancel = isActive || status === 'paused' || status === 'failed';
+        const total = Number(d.totalBytes) > 0 ? Number(d.totalBytes) : 0;
+        const fileUrl = isDone && d.fileUrl ? String(d.fileUrl) : '';
+        return `
+          <div class="p-3 rounded-xl bg-[#161412] border border-[#2f2924] flex flex-col gap-2.5 group">
+            <div class="flex items-start justify-between gap-2">
+              <div class="flex-1 min-w-0">
+                <div class="flex flex-wrap items-center gap-1.5 text-xs">
+                  <span class="font-bold text-slate-200 truncate">${escapeHtml(d.title || 'Untitled')}</span>
+                  <span class="text-xs font-mono ${statusClass(status)}">${statusLabel(status)}</span>
+                </div>
+                <div class="text-[10px] text-slate-500 font-mono mt-0.5 truncate" title="${escapeHtml(d.provider || '')}">${escapeHtml(d.provider || 'unknown')} • ${escapeHtml(d.quality || 'Standard')}</div>
+                ${d.error && !isDone ? `<p class="text-[10px] text-red-400/90 mt-1 break-words">${escapeHtml(d.error)}</p>` : ''}
+              </div>
+              <div class="text-right min-w-[64px]">
+                <div class="text-xs font-mono ${isDone ? 'text-emerald-400' : 'text-slate-400'}">${formatBytes(d.downloadedBytes || 0)}${total ? ' / ' + formatBytes(total) : ''}</div>
+                ${formatSpeed(d.speed) ? `<div class="text-[9px] text-slate-600 font-mono">${formatSpeed(d.speed)}</div>` : ''}
+                <div class="text-[9px] text-slate-600 font-mono">${pct}%</div>
+              </div>
+            </div>
+            <div class="w-full bg-[#211d19] rounded-full h-1.5 border border-[#2f2924] overflow-hidden" role="progressbar" aria-label="Download progress for ${escapeHtml(d.title || 'item')}" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100">
+              <div class="bg-amber-500 h-full rounded-full transition-all duration-300" style="width:${pct}%"></div>
+            </div>
+            <div class="flex flex-wrap items-center gap-1.5 text-xs">
+              ${isDone && fileUrl ? `
+                <a href="${escapeHtml(fileUrl)}" download class="px-2 py-1 rounded bg-emerald-950/50 hover:bg-emerald-900 text-emerald-300 font-mono border border-emerald-800/70 transition flex items-center gap-1" title="Open the downloaded file">
+                  <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg>
+                  <span>Open</span>
+                </a>
+              ` : ''}
+              ${isActive ? `
+                <button type="button" data-action="dl-toggle" data-dl-id="${escapeHtml(d.id)}" class="px-2 py-1 rounded bg-[#211d19] hover:bg-amber-600 text-slate-200 hover:text-white font-mono border border-transparent transition flex items-center gap-1" title="Pause download">
+                  <svg class="w-3 h-3 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6" /></svg>
+                  <span>Pause</span>
+                </button>
+              ` : ''}
+              ${canResume ? `
+                <button type="button" data-action="dl-toggle" data-dl-id="${escapeHtml(d.id)}" class="px-2 py-1 rounded bg-[#211d19] hover:bg-emerald-900 text-emerald-300 font-mono border border-emerald-800/60 transition flex items-center gap-1" title="${status === 'failed' ? 'Retry download' : 'Resume download'}">
+                  <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6-6" /></svg>
+                  <span>${status === 'failed' ? 'Retry' : 'Resume'}</span>
+                </button>
+              ` : ''}
+              ${canCancel ? `
+                <button type="button" data-action="dl-cancel" data-dl-id="${escapeHtml(d.id)}" class="px-2 py-1 rounded bg-red-950/30 hover:bg-red-900/60 text-red-300 hover:text-white font-mono border border-red-800/50 transition flex items-center gap-1" title="Cancel download">
+                  <span>Cancel</span>
+                </button>
+              ` : ''}
+              <button type="button" data-action="dl-remove" data-dl-id="${escapeHtml(d.id)}" class="ml-auto p-1 rounded text-slate-500 hover:text-red-400 hover:bg-red-950/20 transition" title="${isDone ? 'Delete downloaded file' : 'Remove from queue'}">
+                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+/** Enqueue a single stream as a downloadable item. */
+function queueDownloadFromStream(mirror, media) {
+  const url = String(mirror?.resolverUrl || '').trim();
+  if (!url) {
+    showToast('No direct stream URL is available to queue.', 'error');
+    return;
+  }
+  if (/\.m3u8(?:[?#]|$)/i.test(url)) {
+    showToast('HLS playlists cannot be queued as a single file. Use a direct MP4/MKV mirror.', 'error');
+    return;
+  }
+
+  const title = String(media?.title || 'Untitled');
+  const label = String(mirror.label || 'source').replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 60) || 'source';
+  const extensionMatch = url.match(/\.(mp4|mkv|webm|mov|avi|ts)(?:[?#]|$)/i);
+  const extension = extensionMatch ? `.${extensionMatch[1].toLowerCase()}` : '.mp4';
+  const filename = `${title}-${label}`.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 90) + extension;
+  const id = downloadIdFor(url, title);
+
+  const existing = downloads.find((item) => String(item.id) === id);
+  if (existing) {
+    showToast('This stream is already in Downloads.', 'info');
+    return;
+  }
+
+  const body = {
+    id,
+    title,
+    type: media?.type === 'series' ? 'series' : 'movie',
+    provider: label,
+    url,
+    filename,
+    quality: mirror.quality || 'Standard',
+    headers: mirror.headers || undefined,
+    cookie: mirror.signCookie || '',
+  };
+
+  apiDownload('', 'POST', body)
+    .then(() => {
+      showToast('Added to Downloads. Open My Library → Downloads to track it.');
+      return fetchDownloads();
+    })
+    .catch((err) => showToast(err.message || 'Could not queue download.', 'error'));
+}
+
 function openLibraryModal(initialTab = 'watchlist') {
   activeLibraryTab = initialTab;
   switchLibraryTab(initialTab);
@@ -1073,6 +1696,7 @@ function openLibraryModal(initialTab = 'watchlist') {
     libraryModal.classList.remove('hidden');
     libraryModal.style.display = 'flex';
   }
+  if (initialTab === 'downloads') startDownloadsPoll();
 }
 
 function closeLibraryModal() {
@@ -1080,34 +1704,72 @@ function closeLibraryModal() {
     libraryModal.classList.add('hidden');
     libraryModal.style.display = 'none';
   }
+  stopDownloadsPoll();
 }
 
 function switchLibraryTab(tabName) {
-  activeLibraryTab = tabName;
-  if (tabName === 'watchlist') {
-    if (tabWatchlistBtn) tabWatchlistBtn.className = 'pb-3 px-1 border-b-2 border-amber-400 text-white font-bold text-xs flex items-center gap-2 cursor-pointer transition';
-    if (tabHistoryBtn) tabHistoryBtn.className = 'pb-3 px-1 border-b-2 border-transparent text-slate-400 hover:text-slate-200 font-semibold text-xs flex items-center gap-2 cursor-pointer transition';
-    if (libraryWatchlistContainer) libraryWatchlistContainer.classList.remove('hidden');
-    if (libraryHistoryContainer) libraryHistoryContainer.classList.add('hidden');
-    if (clearHistoryBtn) clearHistoryBtn.classList.add('hidden');
+  const tab = ['watchlist', 'history', 'downloads'].includes(tabName) ? tabName : 'watchlist';
+  activeLibraryTab = tab;
+
+  const setTabButton = (button, active) => {
+    if (!button) return;
+    button.className = active
+      ? 'pb-3 px-1 border-b-2 border-amber-400 text-white font-bold text-xs flex items-center gap-2 cursor-pointer transition'
+      : 'pb-3 px-1 border-b-2 border-transparent text-slate-400 hover:text-slate-200 font-semibold text-xs flex items-center gap-2 cursor-pointer transition';
+    button.setAttribute('aria-selected', String(active));
+  };
+  setTabButton(tabWatchlistBtn, tab === 'watchlist');
+  setTabButton(tabHistoryBtn, tab === 'history');
+  setTabButton(tabDownloadsBtn, tab === 'downloads');
+
+  libraryWatchlistContainer?.classList.toggle('hidden', tab !== 'watchlist');
+  libraryHistoryContainer?.classList.toggle('hidden', tab !== 'history');
+  libraryDownloadsContainer?.classList.toggle('hidden', tab !== 'downloads');
+  clearHistoryBtn?.classList.toggle('hidden', tab !== 'history');
+
+  if (tab === 'watchlist') {
+    stopDownloadsPoll();
     renderWatchlistTab();
-  } else {
-    if (tabHistoryBtn) tabHistoryBtn.className = 'pb-3 px-1 border-b-2 border-amber-400 text-white font-bold text-xs flex items-center gap-2 cursor-pointer transition';
-    if (tabWatchlistBtn) tabWatchlistBtn.className = 'pb-3 px-1 border-b-2 border-transparent text-slate-400 hover:text-slate-200 font-semibold text-xs flex items-center gap-2 cursor-pointer transition';
-    if (libraryHistoryContainer) libraryHistoryContainer.classList.remove('hidden');
-    if (libraryWatchlistContainer) libraryWatchlistContainer.classList.add('hidden');
-    if (clearHistoryBtn) clearHistoryBtn.classList.remove('hidden');
+  } else if (tab === 'history') {
+    stopDownloadsPoll();
     renderHistoryTab();
+  } else {
+    renderDownloadsTab();
+    startDownloadsPoll();
   }
 }
 
 let activeGenre = null;
+// One in-flight catalog/search request at a time. This prevents a slow earlier
+// response from overwriting the results of a newer query and cancels work the
+// user no longer needs.
+let browseController = null;
+
+function beginBrowseRequest() {
+  browseController?.abort();
+  const controller = new AbortController();
+  browseController = controller;
+  // A previous search may have been aborted in flight; do not leave its busy
+  // state stuck when the replacement request is a catalog load.
+  searchBtn.disabled = false;
+  searchBtnText.textContent = 'Search';
+  searchSpinner.classList.add('hidden');
+  return controller;
+}
+
+function isCurrentBrowseRequest(controller) {
+  return browseController === controller;
+}
+
+function finishBrowseRequest(controller) {
+  if (browseController === controller) browseController = null;
+}
 
 /**
  * 1. searchMovies(query, provider, genre)
  * Calls GET /api/search?q=<query>&provider=<provider>&genre=<genre>
  */
-async function searchMovies(query, provider = 'all', genre = null, page = 1) {
+async function searchMovies(query, provider = 'all', genre = null, page = 1, signal = undefined) {
   let url = `/api/search?q=${encodeURIComponent(query)}`;
   if (provider && provider !== 'all') {
     url += `&provider=${encodeURIComponent(provider)}`;
@@ -1118,7 +1780,7 @@ async function searchMovies(query, provider = 'all', genre = null, page = 1) {
   }
   url += `&page=${encodeURIComponent(page)}`;
 
-  const response = await fetch(url);
+  const response = await fetch(url, { signal });
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(errorData.error || `Search failed with status HTTP ${response.status}`);
@@ -1187,9 +1849,9 @@ function showSearchResults(results, append = false) {
     const typeLabel = isMovie ? 'Movie' : isSeries ? 'Series' : 'Type unavailable';
     const typeClass = isMovie ? 'badge-movie' : isSeries ? 'badge-series' : 'bg-slate-700 text-slate-300';
     const typeDescription = isMovie ? 'Feature Film' : isSeries ? 'TV Series' : 'Media type unavailable';
-    const posterUrl = item.poster || 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="300" height="450" fill="%23111726"><rect width="300" height="450"/><text x="50%" y="50%" fill="%2364748b" font-family="sans-serif" font-size="16" text-anchor="middle">No Poster</text></svg>';
+    const posterUrl = safeImageUrl(item.poster, POSTER_FALLBACK);
     const safeTitle = escapeHtml(item.title);
-    const yearDisplay = item.year ? `${item.year}` : 'HD';
+    const yearDisplay = item.year ? escapeHtml(String(item.year)) : 'HD';
     const is4K = item.provider === '4khdhub' || (item.tag && /4k|uhd|remux/i.test(item.tag));
     const qualityBadge = is4K ? '4K Ultra HD' : 'HD 1080p';
     const inList = isItemInWatchlist(item.subjectId);
@@ -1201,8 +1863,8 @@ function showSearchResults(results, append = false) {
             src="${posterUrl}"
             alt="${safeTitle}"
             loading="lazy"
+            decoding="async"
             class="poster-img"
-            onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=%27http://www.w3.org/2000/svg%27 width=%27300%27 height=%27450%27 fill=%27%23111726%27><rect width=%27300%27 height=%27450%27/><text x=%2750%25%27 y=%2750%25%27 fill=%27%2364748b%27 font-family=%27sans-serif%27 font-size=%2716%27 text-anchor=%27middle%27>No Poster</text></svg>'"
           />
 
           <!-- Quality Badge Top-Left -->
@@ -1317,8 +1979,8 @@ function showDetails(movie) {
   }
 
   modalTitle.textContent = movie.title || 'Untitled';
-  modalSubjectId.textContent = `ID: ${movie.subjectId}`;
-  modalPoster.src = movie.poster || 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="300" height="450" fill="%23111726"><rect width="300" height="450"/><text x="50%" y="50%" fill="%2364748b" font-family="sans-serif" font-size="16" text-anchor="middle">No Poster</text></svg>';
+  modalSubjectId.textContent = `ID: ${movie.subjectId || ''}`;
+  modalPoster.src = normalizeImageUrl(movie.poster, POSTER_FALLBACK);
 
   // Provider badge
   const provKey = movie.provider || 'addon';
@@ -1438,7 +2100,7 @@ function renderSeriesHierarchy(series) {
             data-stream-id="${escapeHtml(targetId)}"
             data-provider="${escapeHtml(series.provider || 'addon')}"
             data-ep-title="${escapeHtml(series.title)}"
-            data-season="${s.seasonNumber || 1}"
+            data-season="${escapeHtml(String(getSeasonNumberFromValue(s) ?? s.seasonNumber ?? 1))}"
             data-episode="${epNum}"
             class="text-[11px] font-mono px-2.5 py-1.5 rounded-lg bg-[#211d19] hover:bg-amber-600 text-slate-200 hover:text-white transition shrink-0 font-bold"
           >
@@ -1500,6 +2162,9 @@ seriesSeasonsList?.addEventListener('click', (e) => {
  * Calls GET /api/streams/:id?provider=<provider>
  */
 async function loadStreams(id, provider = 'addon', episodeContext = null) {
+  cancelAutoSwitchResolution();
+  autoSwitchGeneration += 1;
+  autoSwitchResolutionPending = false;
   // Remember which media these streams belong to (used for auto-fallback on failure)
   activeStreamContext = {
     id,
@@ -1507,7 +2172,8 @@ async function loadStreams(id, provider = 'addon', episodeContext = null) {
     season: episodeContext?.season || null,
     episode: episodeContext?.episode || null,
   };
-  autoSwitchTried = false;
+  autoSwitchResolutionTried = false;
+  autoSwitchCandidates = [];
   streamsSection.classList.remove('hidden');
   streamsLoading.classList.remove('hidden');
   streamsList.innerHTML = '';
@@ -1610,8 +2276,11 @@ async function loadStreams(id, provider = 'addon', episodeContext = null) {
       mirrorStore.push({
         url: primaryMirror?.resolverUrl || '',
         title: primaryPlayTitle,
+        label: r.quality || 'Source',
+        quality: r.quality || 'Standard',
         cookie: primaryMirror?.signCookie || '',
         headers: primaryMirror?.headers || null,
+        type: primaryMirror?.type || r.codec || '',
         subtitles: primaryMirror?.subtitles || r.subtitles || [],
       });
 
@@ -1620,14 +2289,14 @@ async function loadStreams(id, provider = 'addon', episodeContext = null) {
           <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <div class="flex items-center gap-2">
               <span class="text-xs font-mono font-bold px-2.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">
-                ${r.quality || 'Standard'}
+                ${escapeHtml(r.quality || 'Standard')}
               </span>
               <span class="text-xs font-mono text-emerald-400 uppercase bg-[#0c0b0a] px-2 py-0.5 rounded border border-[#2f2924]">
                 ${escapeHtml(r.provider || provider)}
               </span>
-              ${r.codec ? `<span class="text-xs font-mono text-slate-400 uppercase bg-[#0c0b0a] px-2 py-0.5 rounded border border-[#2f2924]">${r.codec}</span>` : ''}
+              ${r.codec ? `<span class="text-xs font-mono text-slate-400 uppercase bg-[#0c0b0a] px-2 py-0.5 rounded border border-[#2f2924]">${escapeHtml(r.codec)}</span>` : ''}
               ${sizeFormatted ? `<span class="text-xs font-mono text-cyan-300">${sizeFormatted}</span>` : ''}
-              ${r.language ? `<span class="text-xs text-slate-300 bg-[#0c0b0a] px-2 py-0.5 rounded border border-[#2f2924]">${r.language}</span>` : ''}
+              ${r.language ? `<span class="text-xs text-slate-300 bg-[#0c0b0a] px-2 py-0.5 rounded border border-[#2f2924]">${escapeHtml(r.language)}</span>` : ''}
             </div>
 
             ${hasDirectUrl ? `
@@ -1654,6 +2323,19 @@ async function loadStreams(id, provider = 'addon', episodeContext = null) {
                   </svg>
                   <span>Download</span>
                 </a>
+
+                <button
+                  type="button"
+                  data-action="queue-download"
+                  data-mirror-index="${primaryIdx}"
+                  class="px-3 py-1.5 rounded-lg bg-[#211d19] hover:bg-emerald-900 text-emerald-300 border border-emerald-800/70 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                  title="Add to the resumable Downloads queue"
+                >
+                  <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                  </svg>
+                  <span>Queue</span>
+                </button>
               </div>
             ` : ''}
           </div>
@@ -1671,8 +2353,11 @@ async function loadStreams(id, provider = 'addon', episodeContext = null) {
                 mirrorStore.push({
                   url: m.resolverUrl,
                   title: mPlayTitle,
+                  label: m.label || 'Mirror',
+                  quality: r.quality || 'Standard',
                   cookie: m.signCookie || '',
                   headers: m.headers || null,
+                  type: m.type || r.codec || '',
                   subtitles: m.subtitles || r.subtitles || [],
                 });
                 return `
@@ -1706,6 +2391,18 @@ async function loadStreams(id, provider = 'addon', episodeContext = null) {
                       <span>Download</span>
                     </a>
                     <button
+                      type="button"
+                      data-action="queue-download"
+                      data-mirror-index="${mIdx}"
+                      class="px-2.5 py-1 rounded bg-[#211d19] hover:bg-emerald-900 text-emerald-300 font-mono text-[11px] border border-emerald-800/70 transition flex items-center gap-1"
+                      title="Add to the resumable Downloads queue"
+                    >
+                      <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                      </svg>
+                      <span>Queue</span>
+                    </button>
+                    <button
                       data-action="copy-url"
                       data-mirror-index="${mIdx}"
                       class="px-2.5 py-1 rounded bg-[#161412] hover:bg-[#1f2c4a] text-slate-300 font-mono text-[11px] border border-[#2f2924] transition"
@@ -1726,11 +2423,10 @@ async function loadStreams(id, provider = 'addon', episodeContext = null) {
     globalMirrorStore = mirrorStore;
   } catch (err) {
     streamsLoading.classList.add('hidden');
-    streamsList.innerHTML = `
-      <div class="p-4 bg-red-950/40 rounded-xl border border-red-800 text-red-300 text-xs">
-        Failed to fetch streaming sources: ${err.message}
-      </div>
-    `;
+    const error = document.createElement('div');
+    error.className = 'p-4 bg-red-950/40 rounded-xl border border-red-800 text-red-300 text-xs';
+    error.textContent = `Failed to fetch streaming sources: ${err.message}`;
+    streamsList.replaceChildren(error);
   }
 }
 
@@ -1741,6 +2437,10 @@ async function loadStreams(id, provider = 'addon', episodeContext = null) {
  * Destroy any active hls.js instance and detach it from the video element.
  */
 function destroyHls() {
+  if (hlsStartupTimer) {
+    clearTimeout(hlsStartupTimer);
+    hlsStartupTimer = null;
+  }
   if (hlsPlayerInstance) {
     hlsPlayerInstance.destroy();
     hlsPlayerInstance = null;
@@ -1826,12 +2526,181 @@ function setSubtitleTracks(subtitles) {
   updatePlayerControls();
 }
 
-function playStreamSource(rawUrl, title, cookie = '', forceProxy = false, streamHeaders = null, subtitles = currentPlayback.subtitles) {
+/**
+ * Audio track switching — the web counterpart of the Vega app's audio
+ * selector. Two runtimes are supported:
+ *   • hls.js  — `hls.audioTracks` (multi-audio HLS master playlists with
+ *               #EXT-X-MEDIA renditions, e.g. dual-audio anime/drama sources)
+ *   • Safari  — HTMLMediaElement.audioTracks (native HLS via WebKit)
+ * MP4 sources with muxed multi-audio never expose switchable tracks in the
+ * browser, so the selector stays disabled and mirror-level language picks
+ * (castle per-language mirrors etc.) remain the way to change audio there.
+ */
+let currentAudioTracks = [];        // [{ value, label, token, isDefault }]
+let audioPreferenceApplied = false; // true once the saved preference was applied for this source
+
+function savedAudioPreference() {
+  try {
+    const value = localStorage.getItem(AUDIO_PREFERENCE_KEY);
+    return typeof value === 'string' && value !== '' ? value : 'auto';
+  } catch {
+    return 'auto';
+  }
+}
+
+function resetAudioTrackUi() {
+  currentAudioTracks = [];
+  audioPreferenceApplied = false;
+  if (audioSelect) {
+    const autoOption = document.createElement('option');
+    autoOption.value = 'auto';
+    autoOption.textContent = 'Default';
+    audioSelect.replaceChildren(autoOption);
+    audioSelect.value = 'auto';
+    audioSelect.disabled = true;
+  }
+  updatePlayerControls();
+}
+
+/**
+ * Rebuilds the audio select from a normalized track list.
+ * Returns true when the select now exposes switchable tracks.
+ */
+function populateAudioSelect(tracks) {
+  if (!audioSelect) return false;
+  currentAudioTracks = Array.isArray(tracks) ? tracks.filter(Boolean) : [];
+  const autoOption = document.createElement('option');
+  autoOption.value = 'auto';
+  autoOption.textContent = 'Default';
+  audioSelect.replaceChildren(autoOption);
+
+  let preselect = '';
+  const saved = audioPreferenceApplied ? '' : savedAudioPreference();
+  currentAudioTracks.forEach((track, index) => {
+    const option = document.createElement('option');
+    option.value = track.value;
+    option.textContent = track.label;
+    option.dataset.audioDefault = String(Boolean(track.isDefault));
+    audioSelect.add(option);
+    if (!preselect && saved && saved !== 'auto' && track.token === saved) {
+      preselect = track.value;
+    }
+  });
+
+  const switchable = currentAudioTracks.length > 1;
+  audioSelect.disabled = !switchable;
+  if (preselect) {
+    audioSelect.value = preselect;
+    audioPreferenceApplied = true;
+    applyAudioSelection(audioSelect.value); // apply saved language for this source
+  } else {
+    audioSelect.value = 'auto';
+  }
+  updatePlayerControls();
+  return switchable;
+}
+
+/** Persist + apply an audio selection against the active runtime. */
+function applyAudioSelection(value) {
+  const isHls = Boolean(
+    hlsPlayerInstance && Array.isArray(hlsPlayerInstance.audioTracks) && hlsPlayerInstance.audioTracks.length
+  );
+  if (isHls) {
+    if (value === 'auto' || value === '') {
+      const defaultValue = firstDefaultAudioTrackValue(hlsPlayerInstance);
+      if (defaultValue !== null) hlsPlayerInstance.audioTrack = defaultValue;
+    } else {
+      const trackId = Number(value);
+      if (Number.isFinite(trackId)) hlsPlayerInstance.audioTrack = trackId;
+    }
+  } else if (videoPlayer && typeof videoPlayer.audioTracks === 'object' && videoPlayer.audioTracks) {
+    const nativeTracks = Array.from(videoPlayer.audioTracks);
+    if (!nativeTracks.length) return;
+    nativeTracks.forEach((track, index) => {
+      const trackValue = String(track.id ?? index);
+      track.enabled = value === trackValue;
+    });
+  } else {
+    return; // nothing to switch on muxed MP4 audio
+  }
+
+  const meta = currentAudioTracks.find((track) => track.value === value);
+  try {
+    localStorage.setItem(AUDIO_PREFERENCE_KEY, value === 'auto' || !meta ? 'auto' : meta.token);
+  } catch { /* optional */ }
+  audioPreferenceApplied = true;
+  updatePlayerControls();
+}
+
+/** hls.js 'auto' resolves to the rendition flagged default/autoselect, else track 0. */
+function firstDefaultAudioTrackValue(hls) {
+  const list = hls.audioTracks || [];
+  if (!list.length) return null;
+  const defIndex = list.findIndex((t) => t && (t.default || t.autoselect));
+  const track = defIndex !== -1 ? list[defIndex] : list[0];
+  const id = track && track.id !== undefined ? track.id : (defIndex !== -1 ? defIndex : 0);
+  const parsed = Number(id);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/** Keeps currentAudioTracks/select in sync with the active hls.js instance. */
+function syncHlsAudioTracks(hls) {
+  if (!hls || !Array.isArray(hls.audioTracks)) return;
+  const tracks = hls.audioTracks.map((track, index) => {
+    const language = String(track.language || '').trim();
+    const name = String(track.name || '').trim();
+    const label = [
+      name || language || `Audio ${index + 1}`,
+      language && language.toUpperCase() !== name.toUpperCase() ? language.toUpperCase() : '',
+    ].filter(Boolean).join(' · ');
+    return {
+      value: String(track.id ?? index),
+      label,
+      token: (language || name).toLowerCase(),
+      isDefault: Boolean(track.default || track.autoselect),
+    };
+  });
+  populateAudioSelect(tracks);
+}
+
+/** Safari/WebKit path for native HLS playback. */
+function syncNativeAudioTracks() {
+  if (!videoPlayer || hlsPlayerInstance) return; // hls.js manages its own list
+  const nativeTracks = typeof videoPlayer.audioTracks === 'object' && videoPlayer.audioTracks
+    ? Array.from(videoPlayer.audioTracks)
+    : [];
+  if (!nativeTracks.length) return;
+  populateAudioSelect(
+    nativeTracks.map((track, index) => {
+      const language = String(track.language || '').trim();
+      const label = String(track.label || '').trim() || language.toUpperCase() || `Audio ${index + 1}`;
+      return {
+        value: String(track.id ?? index),
+        label,
+        token: (language || label).toLowerCase(),
+        isDefault: Boolean(track.enabled),
+      };
+    })
+  );
+}
+
+audioSelect?.addEventListener('change', () => applyAudioSelection(audioSelect.value));
+videoPlayer?.addEventListener('loadedmetadata', syncNativeAudioTracks);
+
+function playStreamSource(rawUrl, title, cookie = '', forceProxy = false, streamHeaders = null, subtitles = currentPlayback.subtitles, streamType = '') {
   if (!rawUrl) return;
 
+  // A manual source pick supersedes any provider-resolution request still in flight.
+  cancelAutoSwitchResolution();
   savePlaybackProgress();
+  cancelAutoNext();
   // Always destroy any previous hls.js instance before loading a new source.
+  if (hlsStartupTimer) {
+    clearTimeout(hlsStartupTimer);
+    hlsStartupTimer = null;
+  }
   destroyHls();
+  resetAudioTrackUi();
 
   // Normalize protocol-relative URLs (e.g. //host/path) that some mirrors return
   let url = String(rawUrl).trim();
@@ -1841,6 +2710,7 @@ function playStreamSource(rawUrl, title, cookie = '', forceProxy = false, stream
   currentPlayback.title = title;
   currentPlayback.cookie = cookie;
   currentPlayback.headers = streamHeaders;
+  currentPlayback.streamType = streamType;
   currentPlayback.subtitles = subtitles || [];
   setSubtitleTracks(currentPlayback.subtitles);
   // When forceProxy is explicitly true, always use the proxy.
@@ -1878,17 +2748,42 @@ function playStreamSource(rawUrl, title, cookie = '', forceProxy = false, stream
   // Route through /api/proxy-hls so relative segment URLs are rewritten and
   // CORS is handled server-side. Wire Hls.Events.ERROR for fatal network
   // failures so the player auto-switches to another provider mirror.
-  if (/\.m3u8(\?|#|$)/i.test(url)) {
-    const hlsProxyUrl = `/api/proxy-hls?url=${encodeURIComponent(url)}${cookie ? '&cookie=' + encodeURIComponent(cookie) : ''}`;
+  if (/\.m3u8(\?|#|$)/i.test(url) || /^(?:m3u8|hls)$/i.test(streamType)) {
+    const hlsParams = new URLSearchParams({ url });
+    if (cookie) hlsParams.set('cookie', cookie);
+    if (streamHeaders && typeof streamHeaders === 'object' && Object.keys(streamHeaders).length) {
+      hlsParams.set('headers', JSON.stringify(streamHeaders));
+    }
+    const hlsProxyUrl = `/api/proxy-hls?${hlsParams.toString()}`;
 
     if (typeof Hls !== 'undefined' && Hls.isSupported()) {
       const hls = new Hls({ startLevel: -1 }); // -1 = auto quality
       hlsPlayerInstance = hls;
-      hls.loadSource(hlsProxyUrl);
-      hls.attachMedia(videoPlayer);
+      // Dynamic/a-demuxed playlists resolve their audio renditions later.
+      hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => syncHlsAudioTracks(hls));
+      hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_, data) => {
+        if (!audioSelect || !data || data.id === undefined || data.id === null) return;
+        const value = String(data.id);
+        if (Array.from(audioSelect.options).some((option) => option.value === value)) {
+          audioSelect.value = value;
+          // Sync UI state but don't re-apply selection as it's already switched
+          audioPreferenceApplied = true;
+          updatePlayerControls();
+        }
+      });
 
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        syncHlsAudioTracks(hls); // multi-audio masters expose renditions here
         videoPlayer.play().catch((e) => console.warn('HLS play() blocked:', e?.name));
+        hlsStartupTimer = setTimeout(() => {
+          hlsStartupTimer = null;
+          if (videoPlayer.currentTime > 0 || videoPlayer.readyState >= 2) return;
+          if (attemptAutomaticFallback(url, 'HLS source is not starting — checking another source...')) return;
+          if (!activeStreamContext.id || autoSwitchResolutionTried) {
+            showError('This HLS source is not delivering playable media. Try another mirror.');
+            return;
+          }
+        }, 15000);
       });
 
       // A4 fix: wire HLS fatal network errors to the same auto-switch path
@@ -1897,20 +2792,20 @@ function playStreamSource(rawUrl, title, cookie = '', forceProxy = false, stream
       hls.on(Hls.Events.ERROR, (_, data) => {
         if (!data.fatal) return;
         console.warn(`HLS fatal error: type=${data.type} details=${data.details}`);
+        const fallbackMessage = data.type === Hls.ErrorTypes.NETWORK_ERROR
+          ? 'HLS source failed — checking another source...'
+          : 'HLS media failed — checking another source...';
+        if (attemptAutomaticFallback(url, fallbackMessage)) return;
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-          if (!autoSwitchTried && activeStreamContext.id) {
-            autoSwitchTried = true;
-            showError('HLS source failed — switching to another provider...');
-            autoSwitchToWorkingSource(url);
-          } else {
-            hls.startLoad(); // try one internal recovery first
-            showError('HLS network error — check your connection or try another mirror.');
-          }
+          hls.startLoad();
+          showError('HLS network error — check your connection or try another mirror.');
         } else {
-          // Media / other fatal error — nothing hls.js can do, surface to user
-          showError('HLS playback error — the stream format may be unsupported. Try another mirror.');
+          showError('HLS playback error — try another mirror or source.');
         }
       });
+
+      hls.loadSource(hlsProxyUrl);
+      hls.attachMedia(videoPlayer);
 
     } else if (videoPlayer.canPlayType('application/vnd.apple.mpegurl')) {
       // Native HLS (Safari / iOS) — point directly at the proxy URL
@@ -1973,11 +2868,8 @@ function playStreamSource(rawUrl, title, cookie = '', forceProxy = false, stream
     // Proxied playback failed. If we haven't already tried switching providers
     // for this media, ask the server to resolve a working source on ANY provider
     // and retry playback transparently.
-    if (!autoSwitchTried && activeStreamContext.id) {
-      autoSwitchTried = true;
+    if (attemptAutomaticFallback(url, 'Source unavailable — switching to another provider...')) {
       console.warn(`Playback failed (${code}). Trying another provider automatically...`);
-      showError('Source unavailable — switching to another provider...');
-      autoSwitchToWorkingSource(url);
     } else {
       showError(`Playback failed (${code}). The link may have expired — try "Check Sources" again or another mirror.`);
     }
@@ -2006,9 +2898,19 @@ function playStreamSource(rawUrl, title, cookie = '', forceProxy = false, stream
  * media (skipping the URL that just failed), then retries playback with the
  * first healthy source found on another provider/mirror.
  */
-async function autoSwitchToWorkingSource(failedUrl) {
+async function autoSwitchToWorkingSource(failedUrl, generation = autoSwitchGeneration) {
   const { id, provider } = activeStreamContext;
   if (!id) return;
+
+  autoSwitchController?.abort();
+  const controller = new AbortController();
+  autoSwitchController = controller;
+  autoSwitchResolutionPending = true;
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, 40000);
 
   try {
     const titleParam = activeMedia?.title ? `&title=${encodeURIComponent(activeMedia.title)}` : '';
@@ -2016,26 +2918,78 @@ async function autoSwitchToWorkingSource(failedUrl) {
     const typeParam = activeMedia?.type ? `&type=${encodeURIComponent(activeMedia.type)}` : '';
 
     const res = await fetch(
-      `/api/resolve-source?id=${encodeURIComponent(id)}&provider=${encodeURIComponent(provider || 'movieBoxWeb')}${titleParam}${yearParam}${typeParam}`
+      `/api/resolve-source?id=${encodeURIComponent(id)}&provider=${encodeURIComponent(provider || 'movieBoxWeb')}${titleParam}${yearParam}${typeParam}`,
+      { signal: controller.signal }
     );
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
 
     const data = await res.json();
-    const pool = [data.source, ...(data.alternatives || [])].filter(Boolean);
-    // Pick the first candidate that isn't the URL we just tried
-    const next = pool.find((c) => c.url !== failedUrl) || null;
-
-    if (!next) {
-      showError('No alternative provider has a working source for this title right now.');
+    if (generation !== autoSwitchGeneration || autoSwitchController !== controller) return;
+    const pool = [data.source, ...(data.alternatives || [])]
+      .filter((candidate) => candidate?.url && candidate.url !== failedUrl);
+    const seen = new Set();
+    autoSwitchCandidates = pool.filter((candidate) => {
+      if (seen.has(candidate.url)) return false;
+      seen.add(candidate.url);
+      return true;
+    });
+    tryNextFallbackSource(failedUrl);
+  } catch (err) {
+    if (err?.name === 'AbortError') {
+      if (timedOut && generation === autoSwitchGeneration) {
+        showError('Source switch timed out. Try another mirror or refresh the sources.');
+      }
       return;
     }
-
-    hideError();
-    console.log(`Auto-switched source to provider: ${next.provider || 'unknown'}`);
-    playStreamSource(next.url, `${currentPlayback.title || activeMedia?.title || 'Video'} (${next.provider || 'alt provider'})`, next.cookie || '', true, next.headers || null, currentPlayback.subtitles);
-  } catch (err) {
-    showError('Provider switch failed: ' + err.message);
+    if (generation === autoSwitchGeneration) {
+      showError('Provider switch failed: ' + err.message);
+    }
+  } finally {
+    clearTimeout(timeout);
+    if (autoSwitchController === controller) autoSwitchController = null;
+    if (generation === autoSwitchGeneration) autoSwitchResolutionPending = false;
   }
+}
+
+function attemptAutomaticFallback(failedUrl, message) {
+  if (autoSwitchCandidates.length) {
+    hideError();
+    tryNextFallbackSource(failedUrl);
+    return true;
+  }
+  if (autoSwitchResolutionPending) return true;
+  if (!autoSwitchResolutionTried && activeStreamContext.id) {
+    autoSwitchResolutionTried = true;
+    autoSwitchResolutionPending = true;
+    showError(message);
+    autoSwitchToWorkingSource(failedUrl, autoSwitchGeneration);
+    return true;
+  }
+  return false;
+}
+
+function tryNextFallbackSource(failedUrl) {
+  const next = autoSwitchCandidates.shift();
+  if (!next) {
+    showError('No playable alternate source is available for this title right now.');
+    return;
+  }
+  if (next.url === failedUrl) {
+    tryNextFallbackSource(failedUrl);
+    return;
+  }
+  hideError();
+  console.log(`Auto-switched source to provider: ${next.provider || 'unknown'}`);
+  const baseTitle = autoSwitchBaseTitle || currentPlayback.title || activeMedia?.title || 'Video';
+  playStreamSource(
+    next.url,
+    `${baseTitle} (${next.provider || 'alt provider'})`,
+    next.cookie || '',
+    true,
+    next.headers || null,
+    currentPlayback.subtitles,
+    next.type || next.codec || ''
+  );
 }
 
 function updatePlayerMode() {
@@ -2070,13 +3024,24 @@ function toggleStreamMode() {
   }
   currentPlayback.allowDirect = goingDirect;
   currentPlayback.isProxied = !goingDirect;
-  playStreamSource(currentPlayback.rawUrl, currentPlayback.title, currentPlayback.cookie, !goingDirect, currentPlayback.headers);
+  playStreamSource(currentPlayback.rawUrl, currentPlayback.title, currentPlayback.cookie, !goingDirect, currentPlayback.headers, currentPlayback.subtitles, currentPlayback.streamType);
 }
 
 function closeVideoPlayer() {
+  cancelAutoNext();
+  clearSleepTimer();
+  cancelAutoSwitchResolution();
+  autoSwitchGeneration += 1;
+  autoSwitchResolutionPending = false;
   savePlaybackProgress();
   currentPlayback.historyId = null;
   pendingResumeSeconds = 0;
+  autoSwitchCandidates = [];
+  autoSwitchBaseTitle = '';
+  if (hlsStartupTimer) {
+    clearTimeout(hlsStartupTimer);
+    hlsStartupTimer = null;
+  }
   destroyHls();
   if (videoPlayer) {
     videoPlayer.onerror = null;
@@ -2094,6 +3059,7 @@ function closeVideoPlayer() {
     subtitleSelect.disabled = true;
   }
   if (subtitleStatus) subtitleStatus.textContent = '';
+  resetAudioTrackUi();
   if (playbackRateSelect) playbackRateSelect.value = '1';
   if (videoPlayer) videoPlayer.playbackRate = 1;
   currentPlayback.subtitles = [];
@@ -2152,6 +3118,7 @@ async function loadCatalogHomepage(provider = selectedProvider, genre = activeGe
     resultContext = { kind: 'catalog', query: '', provider, genre };
     resultPage = 1;
     if (loadMoreBtn) loadMoreBtn.classList.add('hidden');
+    if (heroCarouselSection) heroCarouselSection.classList.add('hidden');
   } else if (loadMoreBtn) {
     loadMoreBtn.disabled = true;
     loadMoreBtn.textContent = 'Loading...';
@@ -2167,6 +3134,7 @@ async function loadCatalogHomepage(provider = selectedProvider, genre = activeGe
         : `${provLabel} • Catalog Homepage`;
   resultsTitle.textContent = catalogLabel;
   resultsCount.textContent = 'Loading catalog...';
+  const controller = beginBrowseRequest();
 
   try {
     const provParam = provider || 'movieBoxWeb';
@@ -2174,14 +3142,20 @@ async function loadCatalogHomepage(provider = selectedProvider, genre = activeGe
     if (genre) url += `&genre=${encodeURIComponent(genre)}`;
     url += `&page=${encodeURIComponent(page)}`;
 
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: controller.signal });
+    if (!isCurrentBrowseRequest(controller)) return;
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
       throw new Error(errData.error || `Failed to load catalog homepage: HTTP ${res.status}`);
     }
     const data = await res.json();
+    if (!isCurrentBrowseRequest(controller)) return;
     const items = data.results || [];
     if (items.length > 0) {
+      if (!append) {
+        populateHeroCarousel(items);
+        renderContinueWatchingStrip();
+      }
       showSearchResults(items, append);
       resultPage = page;
       if (loadMoreBtn) {
@@ -2199,6 +3173,7 @@ async function loadCatalogHomepage(provider = selectedProvider, genre = activeGe
       }
     }
   } catch (err) {
+    if (err?.name === 'AbortError' || !isCurrentBrowseRequest(controller)) return;
     console.warn('Catalog homepage load fallback:', err.message);
     if (!append) showSearchResults([]);
     showError(err.message || 'Failed to load catalog homepage');
@@ -2208,7 +3183,10 @@ async function loadCatalogHomepage(provider = selectedProvider, genre = activeGe
     }
     if (append) throw err;
   } finally {
-    if (!append) loadingState.classList.add('hidden');
+    if (isCurrentBrowseRequest(controller)) {
+      if (!append) loadingState.classList.add('hidden');
+      finishBrowseRequest(controller);
+    }
   }
 }
 
@@ -2219,6 +3197,8 @@ async function handleSearch(query) {
   const cleanQuery = (query || '').trim();
   if (!cleanQuery) return;
 
+  saveSearchTerm(cleanQuery);
+  closeSearchSuggestions();
   hideError();
   if (welcomeState) welcomeState.classList.add('hidden');
   emptyState.classList.add('hidden');
@@ -2227,14 +3207,19 @@ async function handleSearch(query) {
   resultPage = 1;
   resultContext = { kind: 'search', query: cleanQuery, provider: selectedProvider, genre: activeGenre };
   if (loadMoreBtn) loadMoreBtn.classList.add('hidden');
+  if (heroCarouselSection) heroCarouselSection.classList.add('hidden');
+  const cwSection = document.getElementById('continueWatchingSection');
+  if (cwSection) cwSection.classList.add('hidden');
 
+  const controller = beginBrowseRequest();
   searchBtn.disabled = true;
   searchBtnText.textContent = 'Searching...';
   searchSpinner.classList.remove('hidden');
   resultsTitle.textContent = `Results for "${cleanQuery}"`;
 
   try {
-    const data = await searchMovies(cleanQuery, selectedProvider, activeGenre, 1);
+    const data = await searchMovies(cleanQuery, selectedProvider, activeGenre, 1, controller.signal);
+    if (!isCurrentBrowseRequest(controller)) return;
     showSearchResults(data.results || []);
     if (loadMoreBtn && data.results?.length) {
       loadMoreBtn.classList.remove('hidden');
@@ -2242,12 +3227,16 @@ async function handleSearch(query) {
       loadMoreBtn.textContent = 'Load More Titles';
     }
   } catch (err) {
+    if (err?.name === 'AbortError' || !isCurrentBrowseRequest(controller)) return;
     showError(err.message);
   } finally {
-    loadingState.classList.add('hidden');
-    searchBtn.disabled = false;
-    searchBtnText.textContent = 'Search';
-    searchSpinner.classList.add('hidden');
+    if (isCurrentBrowseRequest(controller)) {
+      loadingState.classList.add('hidden');
+      searchBtn.disabled = false;
+      searchBtnText.textContent = 'Search';
+      searchSpinner.classList.add('hidden');
+      finishBrowseRequest(controller);
+    }
   }
 }
 
@@ -2255,16 +3244,21 @@ async function loadMoreResults() {
   if (loadingMoreResults || !loadMoreBtn || loadMoreBtn.classList.contains('hidden')) return;
   loadingMoreResults = true;
   const nextPage = resultPage + 1;
+  const contextSnapshot = resultContext;
   loadMoreBtn.disabled = true;
   loadMoreBtn.textContent = 'Loading...';
+  let controller = null;
   try {
-    if (resultContext.kind === 'search') {
+    if (contextSnapshot.kind === 'search') {
+      controller = beginBrowseRequest();
       const data = await searchMovies(
-        resultContext.query,
-        resultContext.provider,
-        resultContext.genre,
-        nextPage
+        contextSnapshot.query,
+        contextSnapshot.provider,
+        contextSnapshot.genre,
+        nextPage,
+        controller.signal
       );
+      if (!isCurrentBrowseRequest(controller) || resultContext !== contextSnapshot) return;
       if (!data.results?.length) {
         loadMoreBtn.classList.add('hidden');
         return;
@@ -2273,55 +3267,46 @@ async function loadMoreResults() {
       resultPage = nextPage;
     } else {
       await loadCatalogHomepage(
-        resultContext.provider,
-        resultContext.genre,
+        contextSnapshot.provider,
+        contextSnapshot.genre,
         nextPage,
         true
       );
-      if (loadMoreBtn.classList.contains('hidden')) return;
+      if (resultContext !== contextSnapshot || loadMoreBtn.classList.contains('hidden')) return;
     }
     loadMoreBtn.textContent = 'Load More Titles';
   } catch (err) {
+    if (err?.name === 'AbortError' || resultContext !== contextSnapshot) return;
     showError(err.message || 'Failed to load more titles');
     loadMoreBtn.textContent = 'Retry Loading More';
   } finally {
+    if (controller) finishBrowseRequest(controller);
     loadingMoreResults = false;
-    if (!loadMoreBtn.classList.contains('hidden')) loadMoreBtn.disabled = false;
+    if (resultContext === contextSnapshot && !loadMoreBtn.classList.contains('hidden')) {
+      loadMoreBtn.disabled = false;
+    }
   }
 }
 
 /**
  * Fetch Session & Gateway Status
+ * This app does not implement an authenticated gateway/session; reflect that
+ * honestly instead of pretending to manage a rotating host or token.
  */
 async function fetchSessionStatus() {
   try {
     const res = await fetch('/api/session');
     if (res.ok) {
       const data = await res.json();
-      if (data.currentHost && sessionHostBadge) {
-        const u = new URL(data.currentHost);
-        sessionHostBadge.textContent = `${u.hostname} (${data.tokenPreview || 'Auth OK'})`;
+      if (sessionHostBadge) {
+        const gatewayState = data.gatewayStatus === 'unsupported'
+          ? 'Gateway unsupported'
+          : (data.currentHost ? new URL(data.currentHost).hostname : 'Gateway offline');
+        sessionHostBadge.textContent = gatewayState;
       }
     }
   } catch {
     if (sessionHostBadge) sessionHostBadge.textContent = 'Gateway offline';
-  }
-}
-
-async function handleRotateHost() {
-  try {
-    if (rotateHostBtn) rotateHostBtn.disabled = true;
-    const res = await fetch('/api/hosts/rotate', { method: 'POST' });
-    if (res.ok) {
-      await fetchSessionStatus();
-      if (searchInput.value.trim()) {
-        handleSearch(searchInput.value.trim());
-      }
-    }
-  } catch (err) {
-    console.error(err);
-  } finally {
-    if (rotateHostBtn) rotateHostBtn.disabled = false;
   }
 }
 
@@ -2356,19 +3341,335 @@ function escapeHtml(str) {
     .replace(/'/g, '&#039;');
 }
 
-// Safe for JS string literals inside HTML attributes (onclick="fn('...')")
-function escapeQuotes(str) {
-  const js = String(str || '')
-    .replace(/\\/g, '\\\\')
-    .replace(/'/g, "\\'")
-    .replace(/\r?\n/g, ' ');
-  return escapeHtml(js); // browser decodes entities before running the JS
+// ── Search history & autocomplete ───────────────────────────────────────
+const SEARCH_HISTORY_KEY = 'cinesphere_search_history';
+const MAX_SEARCH_HISTORY = 8;
+let suggestionTimer = null;
+let suggestionController = null;
+let suggestionList = [];
+let suggestionIndex = -1;
+
+function getSearchHistory() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SEARCH_HISTORY_KEY) || '[]');
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((value) => typeof value === 'string')
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .slice(0, MAX_SEARCH_HISTORY);
+  } catch {
+    return [];
+  }
+}
+
+function saveSearchTerm(term) {
+  const clean = String(term || '').trim().slice(0, 120);
+  if (!clean) return;
+  const list = getSearchHistory().filter((value) => value.toLowerCase() !== clean.toLowerCase());
+  list.unshift(clean);
+  try {
+    localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(list.slice(0, MAX_SEARCH_HISTORY)));
+  } catch (err) {
+    console.warn('Failed to save search history:', err.message);
+  }
+}
+
+function closeSearchSuggestions() {
+  if (suggestionTimer) {
+    clearTimeout(suggestionTimer);
+    suggestionTimer = null;
+  }
+  suggestionController?.abort();
+  suggestionController = null;
+  suggestionList = [];
+  suggestionIndex = -1;
+  searchSuggestionsDropdown?.classList.add('hidden');
+  searchInput?.setAttribute('aria-expanded', 'false');
+  searchInput?.removeAttribute('aria-activedescendant');
+}
+
+function renderSearchSuggestions(items, mode) {
+  if (!searchSuggestionsDropdown || !searchInput) return;
+  suggestionList = Array.isArray(items) ? items.slice(0, 8) : [];
+  suggestionIndex = -1;
+
+  if (suggestionList.length === 0) {
+    closeSearchSuggestions();
+    return;
+  }
+
+  const header = mode === 'history' ? 'Recent searches' : 'Suggestions';
+  searchSuggestionsDropdown.innerHTML = `
+    <div class="px-3 pt-2 pb-1 text-[10px] font-mono uppercase tracking-widest text-slate-500">${header}</div>
+    ${suggestionList.map((item, index) => {
+      const title = escapeHtml(item.title || '');
+      const meta = [item.type === 'series' ? 'Series' : item.type === 'movie' ? 'Movie' : '', item.year ? String(item.year) : '']
+        .filter(Boolean)
+        .map(escapeHtml)
+        .join(' · ');
+      const poster = item.poster ? safeImageUrl(item.poster, '') : '';
+      return `
+        <button type="button" role="option" id="searchSuggestionOption-${index}" data-suggestion-index="${index}" aria-selected="false" class="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-[#1f1b17] transition cursor-pointer">
+          ${poster
+            ? `<img src="${poster}" alt="" class="w-7 h-10 rounded object-cover shrink-0 bg-[#211d19]" loading="lazy">`
+            : `<span class="w-7 h-10 rounded bg-[#211d19] border border-[#2f2924] flex items-center justify-center text-slate-500 shrink-0">
+                 <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+               </span>`}
+          <span class="min-w-0">
+            <span class="block text-xs font-semibold text-slate-200 truncate">${title}</span>
+            ${meta ? `<span class="block text-[10px] font-mono text-slate-500 mt-0.5">${meta}</span>` : ''}
+          </span>
+        </button>
+      `;
+    }).join('')}
+  `;
+  searchSuggestionsDropdown.classList.remove('hidden');
+  searchInput.setAttribute('aria-expanded', 'true');
+}
+
+function setSuggestionActive(index) {
+  if (!searchSuggestionsDropdown || suggestionList.length === 0) return;
+  const count = suggestionList.length;
+  suggestionIndex = ((index % count) + count) % count;
+  searchSuggestionsDropdown.querySelectorAll('[data-suggestion-index]').forEach((button, i) => {
+    const active = i === suggestionIndex;
+    button.classList.toggle('search-suggestion-active', active);
+    button.setAttribute('aria-selected', String(active));
+  });
+  const activeButton = searchSuggestionsDropdown.querySelector(`[data-suggestion-index="${suggestionIndex}"]`);
+  if (activeButton && searchInput) {
+    activeButton.scrollIntoView({ block: 'nearest' });
+    searchInput.setAttribute('aria-activedescendant', activeButton.id);
+  }
+}
+
+function chooseSuggestion(index) {
+  const item = suggestionList[index];
+  if (!item) return false;
+  const query = String(item.title || '').trim();
+  if (!query) return false;
+  searchInput.value = query;
+  closeSearchSuggestions();
+  handleSearch(query);
+  return true;
+}
+
+async function loadSearchSuggestions(rawQuery) {
+  const query = String(rawQuery || '').trim();
+  if (query.length < 2) return;
+
+  suggestionController?.abort();
+  const controller = new AbortController();
+  suggestionController = controller;
+  const abortTimer = setTimeout(() => controller.abort(), 4000);
+
+  try {
+    const res = await fetch(`/api/suggestions?q=${encodeURIComponent(query)}`, {
+      signal: controller.signal,
+      credentials: 'same-origin',
+    });
+    if (!res.ok) return;
+    const data = await res.json().catch(() => ({}));
+    if (suggestionController !== controller) return;
+    if (String(searchInput?.value || '').trim().toLowerCase() !== query.toLowerCase()) return;
+    if (document.activeElement !== searchInput) return;
+    renderSearchSuggestions(Array.isArray(data.suggestions) ? data.suggestions : [], 'suggestions');
+  } catch (err) {
+    if (err?.name !== 'AbortError') console.warn('[Suggestions] fetch failed:', err.message);
+  } finally {
+    clearTimeout(abortTimer);
+    if (suggestionController === controller) suggestionController = null;
+  }
+}
+
+// ── Library backup / restore ────────────────────────────────────────────
+function buildLibraryBackup() {
+  return {
+    app: 'CineSphere Browser',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    watchlist: getStoredWatchlist(),
+    history: getStoredHistory(),
+    searchHistory: getSearchHistory(),
+  };
+}
+
+function exportLibraryBackup() {
+  try {
+    const blob = new window.Blob([JSON.stringify(buildLibraryBackup(), null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `cinesphere-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    showToast('Library backup exported.');
+  } catch (err) {
+    showToast('Could not export library: ' + err.message, 'error');
+  }
+}
+
+function backupString(value, maxLength = 500) {
+  return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
+}
+
+function backupHttpUrl(value) {
+  const raw = backupString(value, 2000);
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.href : '';
+  } catch {
+    return '';
+  }
+}
+
+function normalizeBackupWatchlistItem(item) {
+  if (!item || typeof item !== 'object') return null;
+  const id = backupString(item.id || item.subjectId, 500);
+  if (!id) return null;
+  return {
+    id,
+    subjectId: id,
+    title: backupString(item.title, 300) || 'Untitled',
+    type: item.type === 'series' ? 'series' : 'movie',
+    poster: backupHttpUrl(item.poster),
+    year: backupString(item.year, 20),
+    rating: backupString(item.rating, 20),
+    provider: backupString(item.provider, 80) || 'movieBoxWeb',
+    providerDisplayName: backupString(item.providerDisplayName, 120),
+    addedAt: Number.isFinite(Number(item.addedAt)) ? Number(item.addedAt) : Date.now(),
+  };
+}
+
+function normalizeBackupHistoryItem(item) {
+  if (!item || typeof item !== 'object') return null;
+  const subjectId = backupString(item.subjectId || item.id, 500);
+  if (!subjectId) return null;
+  const seasonNumber = Number(item.seasonNumber) > 0 ? Math.floor(Number(item.seasonNumber)) : null;
+  const episodeNumber = Number(item.episodeNumber) > 0 ? Math.floor(Number(item.episodeNumber)) : null;
+  const id = backupString(item.id, 600) || (seasonNumber && episodeNumber ? `${subjectId}::s${seasonNumber}e${episodeNumber}` : subjectId);
+  return {
+    id,
+    subjectId,
+    title: backupString(item.title, 300) || 'Untitled',
+    type: item.type === 'series' ? 'series' : 'movie',
+    poster: backupHttpUrl(item.poster),
+    year: backupString(item.year, 20),
+    provider: backupString(item.provider, 80) || 'movieBoxWeb',
+    providerDisplayName: backupString(item.providerDisplayName, 120),
+    streamTitle: backupString(item.streamTitle, 300),
+    seasonNumber,
+    episodeNumber,
+    streamSubjectId: backupString(item.streamSubjectId, 500),
+    streamProvider: backupString(item.streamProvider, 80) || backupString(item.provider, 80) || 'movieBoxWeb',
+    progressSeconds: Math.max(0, Number(item.progressSeconds) || 0),
+    durationSeconds: Math.max(0, Number(item.durationSeconds) || 0),
+    watchedAt: Number.isFinite(Number(item.watchedAt)) ? Number(item.watchedAt) : Date.now(),
+  };
+}
+
+function mergeBackupItems(current, incoming, limit) {
+  const merged = new Map(current.map((item) => [String(item.id), item]));
+  for (const item of incoming) {
+    const key = String(item.id);
+    if (!merged.has(key)) merged.set(key, item);
+  }
+  return [...merged.values()].slice(0, limit);
+}
+
+function importLibraryBackup(data) {
+  if (!data || typeof data !== 'object') throw new Error('Backup file is not valid JSON.');
+  const watchlistRaw = Array.isArray(data.watchlist) ? data.watchlist.slice(0, 5000) : [];
+  const historyRaw = Array.isArray(data.history) ? data.history.slice(0, 5000) : [];
+  const searchRaw = Array.isArray(data.searchHistory) ? data.searchHistory.slice(0, 50) : [];
+
+  const watchlist = watchlistRaw.map(normalizeBackupWatchlistItem).filter(Boolean);
+  const history = historyRaw.map(normalizeBackupHistoryItem).filter(Boolean);
+  if (watchlist.length === 0 && history.length === 0) {
+    throw new Error('Backup contains no watchlist or watch history items.');
+  }
+
+  const mergedWatchlist = mergeBackupItems(getStoredWatchlist(), watchlist, 500);
+  const mergedHistory = mergeBackupItems(getStoredHistory(), history, 100);
+  saveStoredWatchlist(mergedWatchlist);
+  saveStoredHistory(mergedHistory);
+  for (const term of searchRaw) {
+    if (typeof term === 'string') saveSearchTerm(term);
+  }
+
+  if (activeLibraryTab === 'watchlist') renderWatchlistTab();
+  if (activeLibraryTab === 'history') renderHistoryTab();
+  updateModalWatchlistBtnState();
+  syncCardWatchlistIcons();
+  showToast(`Imported ${watchlist.length} watchlist and ${history.length} history item(s).`);
+}
+
+async function handleLibraryImportFile(file) {
+  if (!file) return;
+  if (file.size > 2 * 1024 * 1024) {
+    showToast('Backup file is too large (maximum 2 MB).', 'error');
+    return;
+  }
+  try {
+    const text = await file.text();
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new Error('Backup file is not valid JSON.');
+    }
+    importLibraryBackup(parsed);
+  } catch (err) {
+    showToast(err.message || 'Could not import backup.', 'error');
+  } finally {
+    if (libraryImportFile) libraryImportFile.value = '';
+  }
+}
+
+// ── Player sleep timer & auto-next preference ──────────────────────────
+const AUTO_NEXT_STORAGE_KEY = 'cinesphere_auto_next';
+
+function autoNextEnabled() {
+  try {
+    return localStorage.getItem(AUTO_NEXT_STORAGE_KEY) !== 'false';
+  } catch {
+    return true;
+  }
+}
+
+function clearSleepTimer(resetSelect = true) {
+  if (sleepTimerHandle) {
+    clearTimeout(sleepTimerHandle);
+    sleepTimerHandle = null;
+  }
+  if (resetSelect && sleepTimerSelect) sleepTimerSelect.value = '0';
+}
+
+function scheduleSleepTimer(minutes) {
+  clearSleepTimer(false);
+  const value = Number(minutes);
+  if (!Number.isFinite(value) || value <= 0) {
+    showToast('Sleep timer is off.');
+    return;
+  }
+  sleepTimerHandle = setTimeout(() => {
+    sleepTimerHandle = null;
+    if (sleepTimerSelect) sleepTimerSelect.value = '0';
+    if (videoPlayer && !videoPlayer.paused) videoPlayer.pause();
+    showToast('Sleep timer reached — playback paused.');
+  }, value * 60 * 1000);
+  showToast(`Sleep timer set for ${value} minutes.`);
 }
 
 // Event Listeners
 searchForm.addEventListener('submit', (e) => {
   e.preventDefault();
   const q = searchInput.value.trim();
+  closeSearchSuggestions();
   if (q) {
     handleSearch(q);
   } else {
@@ -2376,17 +3677,79 @@ searchForm.addEventListener('submit', (e) => {
   }
 });
 
-loadMoreBtn?.addEventListener('click', loadMoreResults);
+searchInput?.addEventListener('input', () => {
+  const q = searchInput.value.trim();
+  if (suggestionTimer) {
+    clearTimeout(suggestionTimer);
+    suggestionTimer = null;
+  }
+  suggestionController?.abort();
+  suggestionController = null;
 
-// Provider select change
-providerSelect?.addEventListener('change', (e) => {
-  selectedProvider = e.target.value;
-  if (searchInput.value.trim()) {
-    handleSearch(searchInput.value.trim());
-  } else {
-    loadCatalogHomepage(selectedProvider);
+  if (!q) {
+    renderSearchSuggestions(getSearchHistory().map((term) => ({ title: term })), 'history');
+    return;
+  }
+  if (q.length < 2) {
+    closeSearchSuggestions();
+    return;
+  }
+  suggestionTimer = setTimeout(() => {
+    suggestionTimer = null;
+    loadSearchSuggestions(q);
+  }, 250);
+});
+
+searchInput?.addEventListener('focus', () => {
+  const q = searchInput.value.trim();
+  if (!q) {
+    renderSearchSuggestions(getSearchHistory().map((term) => ({ title: term })), 'history');
+  } else if (q.length >= 2) {
+    loadSearchSuggestions(q);
   }
 });
+
+searchInput?.addEventListener('keydown', (e) => {
+  const open = searchSuggestionsDropdown && !searchSuggestionsDropdown.classList.contains('hidden');
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    if (!open) {
+      const q = searchInput.value.trim();
+      if (q.length >= 2) loadSearchSuggestions(q);
+      else renderSearchSuggestions(getSearchHistory().map((term) => ({ title: term })), 'history');
+    }
+    if (suggestionList.length > 0) {
+      e.preventDefault();
+      setSuggestionActive(suggestionIndex + (e.key === 'ArrowDown' ? 1 : -1));
+    }
+  } else if (e.key === 'Enter' && open && suggestionIndex >= 0) {
+    e.preventDefault();
+    chooseSuggestion(suggestionIndex);
+  } else if (e.key === 'Escape' && open) {
+    e.preventDefault();
+    closeSearchSuggestions();
+  }
+});
+
+searchSuggestionsDropdown?.addEventListener('mousedown', (e) => {
+  const button = e.target.closest('[data-suggestion-index]');
+  if (!button) return;
+  e.preventDefault();
+  chooseSuggestion(Number(button.dataset.suggestionIndex));
+});
+
+searchSuggestionsDropdown?.addEventListener('click', (e) => {
+  const button = e.target.closest('[data-suggestion-index]');
+  if (!button) return;
+  chooseSuggestion(Number(button.dataset.suggestionIndex));
+});
+
+document.addEventListener('click', (e) => {
+  if (!searchForm.contains(e.target)) closeSearchSuggestions();
+});
+
+dismissErrorBtn?.addEventListener('click', hideError);
+
+loadMoreBtn?.addEventListener('click', loadMoreResults);
 
 // Results grid — card click and "Explore Details" button
 // Placed here (outside showSearchResults) so it's set up exactly once.
@@ -2415,15 +3778,6 @@ resultsGrid.addEventListener('click', (e) => {
 filterAllBtn?.addEventListener('click', () => setFilter('all'));
 filterMoviesBtn?.addEventListener('click', () => setFilter('movie'));
 filterSeriesBtn?.addEventListener('click', () => setFilter('series'));
-
-// Quick Suggestions
-document.querySelectorAll('.quick-chip[data-query]').forEach(chip => {
-  chip.addEventListener('click', () => {
-    const q = chip.getAttribute('data-query');
-    searchInput.value = q;
-    handleSearch(q);
-  });
-});
 
 // Modal close buttons
 closeDetailsBtn.addEventListener('click', () => {
@@ -2455,7 +3809,30 @@ streamsList?.addEventListener('click', (e) => {
   const mirror = Number.isFinite(idx) ? globalMirrorStore[idx] : null;
 
   if (action === 'play-stream' && mirror && mirror.url) {
-    playStreamSource(mirror.url, mirror.title, mirror.cookie, false, mirror.headers, mirror.subtitles);
+    autoSwitchGeneration += 1;
+    autoSwitchResolutionPending = false;
+    autoSwitchResolutionTried = false;
+    const seenUrls = new Set([mirror.url]);
+    autoSwitchCandidates = globalMirrorStore
+      .filter((candidate) => {
+        if (!candidate?.url || seenUrls.has(candidate.url)) return false;
+        seenUrls.add(candidate.url);
+        return true;
+      })
+      .map((candidate) => ({
+        ...candidate,
+        provider: activeStreamContext.provider,
+      }));
+    autoSwitchBaseTitle = mirror.title;
+    playStreamSource(mirror.url, mirror.title, mirror.cookie, false, mirror.headers, mirror.subtitles, mirror.type);
+  } else if (action === 'queue-download' && mirror && mirror.url) {
+    queueDownloadFromStream({
+      resolverUrl: mirror.url,
+      label: mirror.label || mirror.quality || 'source',
+      quality: mirror.quality || 'Standard',
+      headers: mirror.headers,
+      signCookie: mirror.cookie,
+    }, activeMedia);
   } else if (action === 'copy-url' && mirror && mirror.url) {
     copyToClipboard(mirror.url, btn);
   }
@@ -2487,6 +3864,41 @@ copyStreamBtn?.addEventListener('click', () => {
   }
 });
 
+queuePlayerStream?.addEventListener('click', () => {
+  if (!currentPlayback.rawUrl) {
+    showToast('No active stream to queue.', 'error');
+    return;
+  }
+  queueDownloadFromStream({
+    resolverUrl: currentPlayback.rawUrl,
+    label: currentPlayback.streamType || 'player',
+    quality: currentPlayback.streamType || 'Stream',
+    headers: currentPlayback.headers,
+    signCookie: currentPlayback.cookie,
+  }, activeMedia);
+});
+
+sleepTimerSelect?.addEventListener('change', () => {
+  scheduleSleepTimer(sleepTimerSelect.value);
+});
+
+if (autoNextToggle) {
+  autoNextToggle.checked = autoNextEnabled();
+  autoNextToggle.addEventListener('change', () => {
+    try {
+      localStorage.setItem(AUTO_NEXT_STORAGE_KEY, String(autoNextToggle.checked));
+    } catch {
+      // Preference still applies for this session.
+    }
+    if (!autoNextToggle.checked) {
+      cancelAutoNext();
+      showToast('Auto-play next episode disabled.');
+    } else {
+      showToast('Auto-play next episode enabled.');
+    }
+  });
+}
+
 // Modal Watchlist Toggle
 modalWatchlistBtn?.addEventListener('click', () => {
   if (activeMedia) {
@@ -2500,7 +3912,41 @@ closeLibraryBtn?.addEventListener('click', closeLibraryModal);
 closeLibraryFooterBtn?.addEventListener('click', closeLibraryModal);
 tabWatchlistBtn?.addEventListener('click', () => switchLibraryTab('watchlist'));
 tabHistoryBtn?.addEventListener('click', () => switchLibraryTab('history'));
+tabDownloadsBtn?.addEventListener('click', () => switchLibraryTab('downloads'));
 clearHistoryBtn?.addEventListener('click', () => clearAllHistory());
+libraryExportBtn?.addEventListener('click', exportLibraryBackup);
+libraryImportBtn?.addEventListener('click', () => libraryImportFile?.click());
+libraryImportFile?.addEventListener('change', () => handleLibraryImportFile(libraryImportFile.files?.[0]));
+
+libraryDownloadsContainer?.addEventListener('click', async (e) => {
+  const button = e.target.closest('[data-action]');
+  if (!button) return;
+  const id = String(button.dataset.dlId || '');
+  if (!id) return;
+  button.disabled = true;
+  try {
+    if (button.dataset.action === 'dl-toggle') {
+      const item = downloads.find((entry) => String(entry.id) === id);
+      const active = item && (item.status === 'downloading' || item.status === 'queued');
+      await apiDownload(`/${encodeURIComponent(id)}/${active ? 'pause' : 'resume'}`, 'POST');
+      showToast(active ? 'Download paused.' : 'Download resumed.');
+    } else if (button.dataset.action === 'dl-cancel') {
+      await apiDownload(`/${encodeURIComponent(id)}/cancel`, 'POST');
+      showToast('Download cancelled.');
+    } else if (button.dataset.action === 'dl-remove') {
+      const item = downloads.find((entry) => String(entry.id) === id);
+      const removingFile = item?.status === 'completed';
+      if (!window.confirm(removingFile ? 'Delete this downloaded file from disk?' : 'Remove this download from the queue?')) return;
+      await apiDownload(`/${encodeURIComponent(id)}`, 'DELETE');
+      showToast(removingFile ? 'Downloaded file deleted.' : 'Download removed.');
+    }
+    await fetchDownloads();
+  } catch (err) {
+    showToast(err.message || 'Download action failed.', 'error');
+  } finally {
+    button.disabled = false;
+  }
+});
 
 libraryModal?.addEventListener('click', (e) => {
   if (e.target === libraryModal) closeLibraryModal();
@@ -2565,10 +4011,6 @@ function updateProviderUI(provId, provName, selectedGenre) {
         b.classList.remove('active');
       }
     });
-  }
-
-  if (providerSelect) {
-    providerSelect.value = provId;
   }
 
   renderProvidersModalList();
@@ -2686,43 +4128,6 @@ async function loadProvidersDropdown() {
       groups[cat].push(p);
     }
 
-    if (providerSelect) {
-      let html = `<option value="all" class="bg-[#161412] text-white">⚡ Unified Search (${providers.length} Providers)</option>`;
-      const orderedCategories = [
-        'Featured Streaming',
-        'Native',
-        'Vega English',
-        'Vega Global',
-        'Vega Anime',
-        'Vega Regional (India)',
-        'BDIX & Local',
-        'Vega Regional',
-      ];
-
-      for (const cat of orderedCategories) {
-        if (groups[cat] && groups[cat].length > 0) {
-          html += `<optgroup label="── ${cat} ──" class="bg-[#161412] text-amber-400 font-bold">`;
-          for (const p of groups[cat]) {
-            html += `<option value="${escapeQuotes(p.id)}" class="bg-[#161412] text-white">${escapeHtml(p.name)} (${p.type || 'scraper'})</option>`;
-          }
-          html += `</optgroup>`;
-        }
-      }
-
-      for (const [cat, list] of Object.entries(groups)) {
-        if (!orderedCategories.includes(cat) && list.length > 0) {
-          html += `<optgroup label="── ${cat} ──" class="bg-[#161412] text-amber-400 font-bold">`;
-          for (const p of list) {
-            html += `<option value="${escapeQuotes(p.id)}" class="bg-[#161412] text-white">${escapeHtml(p.name)}</option>`;
-          }
-          html += `</optgroup>`;
-        }
-      }
-
-      providerSelect.innerHTML = html;
-      providerSelect.value = selectedProvider;
-    }
-
     updateProviderUI(selectedProvider);
   } catch (err) {
     console.warn('Failed to load providers list:', err);
@@ -2781,6 +4186,228 @@ providersModalList?.addEventListener('click', (e) => {
   if (pId) selectProvider(pId, pName);
 });
 
+// ══════════════════════════════════════════════════════════════
+// VEGA-STYLE HERO CAROUSEL
+// Picks up to 4 items from catalog results, rotates every 8 s.
+// Pauses on pointer-enter; resumes on pointer-leave.
+// ══════════════════════════════════════════════════════════════
+let heroItems = [];
+let heroIndex = 0;
+let heroTimer = null;
+let heroPaused = false;
+const HERO_COUNT = 4;
+const HERO_INTERVAL = 8000;
+
+const heroCarouselSection = document.getElementById('heroCarouselSection');
+const heroSlides = document.getElementById('heroSlides');
+const heroTitle = document.getElementById('heroTitle');
+const heroDesc = document.getElementById('heroDesc');
+const heroBadges = document.getElementById('heroBadges');
+const heroDots = document.getElementById('heroDots');
+const heroPlayBtn = document.getElementById('heroPlayBtn');
+const heroInfoBtn = document.getElementById('heroInfoBtn');
+const heroPrevBtn = document.getElementById('heroPrev');
+const heroNextBtn = document.getElementById('heroNext');
+
+function heroGetItem() { return heroItems[heroIndex] || null; }
+
+function heroRenderSlide(item, active) {
+  if (!item) return '';
+  const bgUrl = item.poster ? `/api/poster?url=${encodeURIComponent(item.poster)}` : '';
+  return `<div class="hero-slide absolute inset-0 transition-opacity duration-700 ${active ? 'opacity-100' : 'opacity-0'}" aria-hidden="${!active}">
+    ${bgUrl ? `<img src="${bgUrl}" alt="" class="w-full h-full object-cover object-center" loading="lazy" style="filter:brightness(0.55) saturate(1.1);">` : '<div class="w-full h-full bg-gradient-to-br from-[#1a1512] to-[#0c0b0a]"></div>'}
+  </div>`;
+}
+
+function heroUpdateContent() {
+  const item = heroGetItem();
+  if (!item || !heroTitle) return;
+  heroTitle.textContent = item.title || 'Untitled';
+  heroDesc.textContent = item.description || '';
+  const isMovie = item.type === 'movie';
+  const isSeries = item.type === 'series';
+  if (heroBadges) {
+    heroBadges.innerHTML = [
+      isMovie ? '<span class="badge-movie text-[10px] font-mono uppercase font-bold px-2 py-0.5 rounded">Movie</span>' : '',
+      isSeries ? '<span class="badge-series text-[10px] font-mono uppercase font-bold px-2 py-0.5 rounded">Series</span>' : '',
+      item.year ? `<span class="text-[10px] font-mono text-slate-400 px-2 py-0.5 rounded bg-black/40 border border-white/5">${escapeHtml(String(item.year))}</span>` : '',
+      item.rating ? `<span class="text-[10px] font-mono text-amber-400 px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/20">★ ${escapeHtml(String(item.rating))}</span>` : '',
+    ].join('');
+  }
+}
+
+function heroUpdateSlides() {
+  if (!heroSlides) return;
+  heroSlides.innerHTML = heroItems.map((item, i) => heroRenderSlide(item, i === heroIndex)).join('');
+  if (heroDots) {
+    heroDots.innerHTML = heroItems.map((_, i) =>
+      `<button class="hero-dot w-2 h-2 rounded-full transition-all ${i === heroIndex ? 'bg-amber-400 scale-125' : 'bg-white/30 hover:bg-white/60'} cursor-pointer" data-hero-index="${i}" aria-label="Go to slide ${i + 1}"></button>`
+    ).join('');
+  }
+  heroUpdateContent();
+}
+
+function heroGoTo(index) {
+  if (heroItems.length === 0) return;
+  heroIndex = ((index % heroItems.length) + heroItems.length) % heroItems.length;
+  if (!heroSlides) return;
+  heroSlides.querySelectorAll('.hero-slide').forEach((el, i) => {
+    el.classList.toggle('opacity-100', i === heroIndex);
+    el.classList.toggle('opacity-0', i !== heroIndex);
+    el.setAttribute('aria-hidden', String(i !== heroIndex));
+  });
+  if (heroDots) {
+    heroDots.querySelectorAll('.hero-dot').forEach((dot, i) => {
+      dot.classList.toggle('bg-amber-400', i === heroIndex);
+      dot.classList.toggle('scale-125', i === heroIndex);
+      dot.classList.toggle('bg-white/30', i !== heroIndex);
+    });
+  }
+  heroUpdateContent();
+}
+
+function heroStartTimer() {
+  heroStopTimer();
+  if (heroItems.length < 2) return;
+  heroTimer = setInterval(() => {
+    if (!heroPaused) heroGoTo(heroIndex + 1);
+  }, HERO_INTERVAL);
+}
+
+function heroStopTimer() {
+  if (heroTimer) { clearInterval(heroTimer); heroTimer = null; }
+}
+
+function populateHeroCarousel(catalogItems) {
+  if (!heroCarouselSection) return;
+  if (!Array.isArray(catalogItems) || catalogItems.length === 0) {
+    heroCarouselSection.classList.add('hidden');
+    return;
+  }
+  const pool = catalogItems.filter(it => it && it.poster);
+  if (pool.length === 0) {
+    heroCarouselSection.classList.add('hidden');
+    return;
+  }
+  const shuffled = [...pool].sort(() => Math.random() - 0.5);
+  heroItems = shuffled.slice(0, HERO_COUNT);
+  heroIndex = 0;
+  heroCarouselSection.classList.remove('hidden');
+  heroUpdateSlides();
+  heroStartTimer();
+}
+
+// Hero carousel event wiring
+const heroCarouselEl = document.getElementById('heroCarousel');
+if (heroCarouselEl) {
+  heroCarouselEl.addEventListener('pointerenter', () => { heroPaused = true; });
+  heroCarouselEl.addEventListener('pointerleave', () => { heroPaused = false; });
+}
+if (heroPrevBtn) heroPrevBtn.addEventListener('click', () => { heroPaused = true; heroGoTo(heroIndex - 1); setTimeout(() => { heroPaused = false; }, 3000); });
+if (heroNextBtn) heroNextBtn.addEventListener('click', () => { heroPaused = true; heroGoTo(heroIndex + 1); setTimeout(() => { heroPaused = false; }, 3000); });
+if (heroDots) {
+  heroDots.addEventListener('click', (e) => {
+    const dot = e.target.closest('[data-hero-index]');
+    if (!dot) return;
+    heroPaused = true;
+    heroGoTo(Number(dot.dataset.heroIndex));
+    setTimeout(() => { heroPaused = false; }, 3000);
+  });
+}
+if (heroPlayBtn) {
+  heroPlayBtn.addEventListener('click', () => {
+    const item = heroGetItem();
+    if (!item) return;
+    loadDetails(item.subjectId, item.provider || 'movieBoxWeb')
+      .then(details => {
+        details.title ||= item.title;
+        details.poster ||= item.poster;
+        details.year ||= item.year;
+        details.type ||= item.type;
+        showDetails(details);
+        if (details.type !== 'series') {
+          loadStreams(item.subjectId, item.provider || 'movieBoxWeb');
+        }
+      })
+      .catch(err => showError('Failed to open hero item: ' + err.message));
+  });
+}
+if (heroInfoBtn) {
+  heroInfoBtn.addEventListener('click', () => {
+    const item = heroGetItem();
+    if (!item) return;
+    loadDetails(item.subjectId, item.provider || 'movieBoxWeb')
+      .then(details => {
+        details.title ||= item.title;
+        details.poster ||= item.poster;
+        details.year ||= item.year;
+        details.type ||= item.type;
+        showDetails(details);
+      })
+      .catch(err => showError('Failed to open hero item: ' + err.message));
+  });
+}
+
+// ══ Continue Watching strip click delegation ══
+document.addEventListener('click', (e) => {
+  // Resume item
+  const cwCard = e.target.closest('[data-action="cw-resume"]');
+  if (cwCard && !e.target.closest('[data-action="cw-remove"]')) {
+    const subjectId = cwCard.dataset.subjectId;
+    const provider = cwCard.dataset.provider || 'movieBoxWeb';
+    const streamSubjectId = cwCard.dataset.streamSubjectId || subjectId;
+    const streamProvider = cwCard.dataset.streamProvider || provider;
+    const historyId = cwCard.dataset.historyId;
+
+    const history = JSON.parse(localStorage.getItem('cinesphere_history') || '[]');
+    const entry = history.find(it => String(it.id) === String(historyId));
+    if (entry && entry.progressSeconds > 0) {
+      pendingResumeSeconds = Math.min(Number(entry.progressSeconds), Number(entry.durationSeconds || entry.progressSeconds));
+    }
+
+    loadDetails(subjectId, provider)
+      .then(details => {
+        details.title ||= entry?.title || 'Untitled';
+        details.poster ||= entry?.poster || '';
+        details.type ||= entry?.type || 'movie';
+        showDetails(details);
+        loadStreams(streamSubjectId, streamProvider);
+      })
+      .catch(err => showError('Failed to resume: ' + err.message));
+    return;
+  }
+
+  // Remove item
+  const cwRemove = e.target.closest('[data-action="cw-remove"]');
+  if (cwRemove) {
+    e.stopPropagation();
+    const historyId = cwRemove.dataset.historyId;
+    if (!historyId) return;
+    try {
+      const history = JSON.parse(localStorage.getItem('cinesphere_history') || '[]');
+      const updated = history.filter(it => String(it.id) !== String(historyId));
+      localStorage.setItem('cinesphere_history', JSON.stringify(updated));
+    } catch (err) {
+      console.warn('Failed to remove continue watching item:', err);
+    }
+    renderContinueWatchingStrip();
+    return;
+  }
+});
+
+// Clear all continue watching
+document.getElementById('cwClearBtn')?.addEventListener('click', () => {
+  try {
+    const history = JSON.parse(localStorage.getItem('cinesphere_history') || '[]');
+    const cwIds = new Set(getContinueWatchingItems().map(it => it.id));
+    const kept = history.filter(it => !cwIds.has(it.id));
+    localStorage.setItem('cinesphere_history', JSON.stringify(kept));
+  } catch (err) {
+    console.warn('Failed to clear continue watching items:', err);
+  }
+  renderContinueWatchingStrip();
+});
+
 // Top streaming hub channels switcher
 const topChannelsBar = document.getElementById('topChannelsBar');
 topChannelsBar?.addEventListener('click', (e) => {
@@ -2804,9 +4431,6 @@ topChannelsBar?.addEventListener('click', (e) => {
   }
 });
 
-// Host rotation (if present)
-rotateHostBtn?.addEventListener('click', handleRotateHost);
-
 // Brand Home Button click returns to catalog homepage
 document.getElementById('brandHomeBtn')?.addEventListener('click', () => {
   window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -2816,11 +4440,35 @@ document.getElementById('brandHomeBtn')?.addEventListener('click', () => {
   loadCatalogHomepage(selectedProvider);
 });
 
+// One capture-phase listener handles every poster/image error without inline
+// handlers (the CSP forbids inline script).
+document.addEventListener('error', (event) => {
+  const image = event.target;
+  if (!(image instanceof window.HTMLImageElement)) return;
+  if (image.dataset.posterFallbackApplied === 'true') return;
+  image.dataset.posterFallbackApplied = 'true';
+  image.src = POSTER_FALLBACK;
+}, true);
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    heroPaused = true;
+    stopDownloadsPoll();
+  } else {
+    heroPaused = false;
+    if (libraryModal && !libraryModal.classList.contains('hidden') && activeLibraryTab === 'downloads') {
+      startDownloadsPoll();
+    }
+  }
+});
+
 // Initialize gateway status, dynamic providers, and library badges
 fetchSessionStatus();
 loadProvidersDropdown();
 updateWatchlistBadges();
 updateHistoryBadges();
+renderContinueWatchingStrip();
+fetchDownloads();
 
 // Initial load: show featured catalog homepage from default MovieBox Web
 loadCatalogHomepage(selectedProvider);

@@ -1,30 +1,12 @@
 # System Architecture
 
-## Tech Stack
-
-- Frontend: static HTML, CSS, and browser JavaScript in `public/`; Tailwind CSS is loaded from its CDN.
-- Backend: Node.js with Express, using CommonJS modules.
-- Data storage: none; API caches and rate-limit state are held in process memory.
-- Authentication: none.
-- External integrations: registered provider adapters and guarded HTTP requests through Axios/fetch utilities.
-
-## Request Flow
-
-1. The Express app in `server.js` serves `public/` and exposes the JSON API and media proxy routes.
-2. API routes validate inputs, apply rate limits, and use in-memory TTL caches where configured.
-3. `providers.js` coordinates provider registration, search, details, and stream lookup; provider implementations live in root-level adapter files and under `vega-dist/`.
-4. `lib/` contains shared cache, media normalization, network guard, and season parsing utilities.
-5. The browser UI in `public/app.js` calls the API and renders results, details, and playback controls; `public/style.css` contains custom styling.
-
-# System Architecture
-
 ## Technology and Runtime
 
 - Runtime: Node.js with CommonJS modules.
 - HTTP server: Express 5; `server.js` serves the static app and JSON/media routes.
-- Browser UI: plain HTML/CSS/JavaScript. Tailwind CSS and hls.js are loaded from CDNs; `public/style.css` supplies custom styles. There is no frontend compile step.
+- Browser UI: plain HTML/CSS/JavaScript. Tailwind is built into `public/tailwind.css`; hls.js 1.7.4 is vendored at `public/vendor/hls.min.js` with SRI. `public/style.css` supplies custom styles. There is no frontend bundling framework.
 - Integrations: Axios, native `fetch`, Cheerio, native provider classes, and dynamically loaded Vega modules.
-- Persistence: none. Caches, rate-limit counters, and the Vega `kvStore` are process-local memory.
+- Persistence: caches, rate-limit counters, and the Vega `kvStore` are process-local memory. Completed and in-progress download files plus their metadata are persisted under `DOWNLOAD_DIR` (default `./downloads`); Serverless hosting with an ephemeral filesystem is not suitable for the download manager.
 - Authentication: none. The API is not scoped to users.
 
 ## Runtime Flow
@@ -33,7 +15,7 @@
 2. The browser code in `public/app.js` calls the API for provider lists, search, details, episodes, and sources.
 3. `providers.js` owns the registry and orchestrates parallel search, provider-priority sorting, details, and stream fallbacks.
 4. Native provider classes and `VegaAdapter` translate provider-specific data into the shared catalog, details, and release shapes consumed by the UI.
-5. Media endpoints fetch/probe upstream resources using `safeFetch`, then stream or transform the response for browser playback, download, HLS, subtitles, or posters.
+5. Media endpoints fetch/probe upstream resources using `safeFetch`, then stream or transform the response for browser playback, download, HLS, subtitles, or posters. `lib/mediaProbe.js` validates media bytes (HTML pages, images, and invalid HLS are rejected) and detects HLS even when URLs have no extension or segments are mislabeled.
 
 ## Component Map
 
@@ -48,12 +30,15 @@
 | `vega-dist/<provider-id>/` | Vega `posts.js`, `meta.js`, `stream.js`, optional `episodes.js`, and optional catalog/settings modules. |
 | `vega-dist/providerContext.js` | Bundled provider runtime support; treat as generated/vendor-like code and avoid unrelated edits. |
 | `lib/cache.js` | Bounded TTL cache with LRU refresh and in-flight request de-duplication. |
-| `lib/netGuard.js` | Validates proxy destinations and revalidates redirect hops before server-side fetches. |
+| `lib/netGuard.js` | Validates proxy destinations and revalidates redirect hops before server-side fetches; allows public NAT64/6to4 while rejecting embedded private IPv4. |
+| `lib/mediaProbe.js` | Probes playable bytes, rejects challenge/HTML/image responses, and distinguishes direct media from HLS. |
+| `lib/downloads.js` | Disk-backed download queue with pause/resume/cancel, metadata persistence, and safe file serving. |
 | `lib/mediaUtils.js` | Shared media field parsing, result mapping, and deduplication helpers. |
 | `lib/seasonParser.js` | Standalone season/episode normalizer with optional episode-link expansion and language-variant merging; no current imports were found outside this module. |
-| `public/index.html` | Static UI structure and CDN dependencies. |
-| `public/app.js` | Search/detail/source workflows, filtering, playback controls, HLS, and provider fallback UI. |
+| `public/index.html` | Static UI structure and local script dependencies. |
+| `public/app.js` | Search/detail/source workflows, filtering, browser player controls (volume, fill/fit, PiP, keyboard shortcuts), library/downloads, HLS, and provider fallback UI. |
 | `public/style.css` | Custom UI styles. |
+| `public/vendor/hls.min.js` | Vendored hls.js 1.7.4 (Apache-2.0) with matching SRI. |
 | `index.js` | CLI multi-provider search; query is the first argument and defaults to `Inception`. |
 | `docs/` | Agent notes, product requirements, and architecture documentation. |
 
@@ -64,7 +49,8 @@
 - Search across providers uses `Promise.allSettled` and a per-provider timeout. Individual failures are logged and contribute no results; they do not fail the entire search.
 - Results are stably sorted by a selected genre priority list, or by the default list. Query text can infer a genre if no explicit genre is provided. `movieBoxWeb` is first in each configured list.
 - Details/source fallback is restricted to Vega-compatible link-style IDs (root-relative paths or non-Stremio URLs). Native IDs such as Stremio IDs are provider-specific and are not interchangeable.
-- `getStreams` attempts the requested provider first, then a bounded number of eligible fallbacks if the result count does not exceed `minSources`.
+- `getStreams` attempts the requested provider first, then a bounded number of eligible fallbacks if the result count does not exceed `minSources`. Cross-provider title fallback only accepts a title match; it never auto-plays the first unrelated search hit.
+- Only HTTP(S) mirrors are returned to the web client. Magnet/acestream-style torrent mirrors are native-only and are filtered out rather than exposed as dead play/download buttons.
 
 ## Shared Data Contracts
 
@@ -99,8 +85,8 @@ All API routes are same-origin with the browser UI. JSON route failures generall
 | Method and path | Inputs | Purpose and response |
 | --- | --- | --- |
 | `GET /api/health` | None | `{ "ok": true }`; process health only. |
-| `GET /api/session` | None | Provider count and placeholder host/token fields; not real authentication/session state. |
-| `POST /api/hosts/rotate` | None | Stub returning `{ "ok": true }`; no gateway rotation currently occurs. |
+| `GET /api/session` | None | Provider count and a null host/token with `gatewayStatus: "unsupported"`; there is no real authentication/session state. |
+| `POST /api/hosts/rotate` | None | Returns HTTP 501 because no gateway rotation is implemented. |
 | `GET /api/providers` | None | `{ providers, count }`, with IDs, display names, category/type, Vega flag, and disabled state. |
 | `GET /api/catalog/homepage` | Optional `provider`, `genre` or `type`, `page` (1-50) | `{ ok, provider, count, results, metas }`; catalog results support provider page selection. The all-provider Asian drama catalog combines enabled drama catalogs with MovieBox Web series, then keeps series whose metadata identifies an Asian origin. |
 | `GET /api/search` | `q` or `query`; optional `provider`, `genre` or `type`, `page` (1-50) | `{ query, provider, genre, page, hasMore, count, results }`. Query is trimmed and capped at 200 characters. Genre priorities include movies, anime, drama, Hollywood, and Bollywood plus aliases. |
@@ -129,8 +115,9 @@ Unknown `/api/*` paths return JSON 404. Other unmatched paths serve `public/inde
 
 ## Network Safety and Deployment
 
-- `safeFetch` accepts only HTTP(S), rejects URLs with embedded credentials, resolves destination addresses, and blocks loopback, link-local, unspecified, and multicast addresses. It revalidates each redirect hop and caps redirect count.
-- `ALLOW_PRIVATE_NETWORKS` defaults to true so BDIX/private-network providers can work. Setting it to `false` also blocks private ranges. This tradeoff is security-sensitive: the application has no authentication, and the server defaults to binding all interfaces (`0.0.0.0`). Restrict the bind address/network and disable private destinations before exposing it to untrusted users.
+- `safeFetch` accepts only HTTP(S), rejects URLs with embedded credentials, resolves destination addresses, and blocks loopback, link-local, unspecified, multicast, and special-use addresses. It revalidates each redirect hop and caps redirect count. Public NAT64/6to4 addresses are allowed; private IPv4 addresses embedded in those transition forms remain blocked.
+- Residual SSRF limitation: DNS is re-resolved by the actual connection after validation, and provider modules use their own HTTP clients. There is no IP-pinned shared client yet; treat `safeFetch` as strong first-hop mitigation, not complete protection.
+- `ALLOW_PRIVATE_NETWORKS` defaults to `false`; private-network destinations (including BDIX integrations) require an explicit `ALLOW_PRIVATE_NETWORKS=true`. Loopback, link-local, multicast, and special-use ranges stay blocked. This tradeoff is security-sensitive: the application has no authentication and is intended to bind only to `127.0.0.1` unless an operator explicitly chooses remote exposure.
 - Proxy-supplied headers are restricted to `referer`, `origin`, `cookie`, `user-agent`, `authorization`, `accept`, and `accept-language`, with value length and CR/LF checks.
 - Media proxying preserves backpressure, forwards byte-range metadata, and aborts upstream requests when the client disconnects.
 - Security headers include `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and `X-Frame-Options: DENY`. The JSON body limit is 100 KB.
@@ -140,8 +127,9 @@ Unknown `/api/*` paths return JSON 404. Other unmatched paths serve `public/inde
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `PORT` | `3000` | HTTP port. |
-| `HOST` | `0.0.0.0` | Bind address. Use `127.0.0.1` to restrict access to the local machine. |
-| `ALLOW_PRIVATE_NETWORKS` | Enabled unless set to `false` | Allow private destination ranges for proxy requests; required by some BDIX integrations. |
+| `HOST` | `127.0.0.1` | Bind address. Use `0.0.0.0` only for intentional, access-controlled remote exposure. |
+| `ALLOW_PRIVATE_NETWORKS` | `false` | Set to `true` to allow private destination ranges for approved BDIX integrations. |
+| `DOWNLOAD_DIR` | `./downloads` | Writable directory for download files and metadata; requires persistent storage. |
 | `FOURKDH_BASE` | Defined in `fourkdhhub.js` | Override the 4KHDHub upstream base URL. |
 
 The project does not load `.env` automatically. `.env.example` is a configuration reference only; export variables in the process environment or use deployment tooling that supplies them.
@@ -151,9 +139,9 @@ The project does not load `.env` automatically. `.env.example` is a configuratio
 - `npm run dev`: start the server in development.
 - `npm start`: start the same `server.js` entry point.
 - `npm run cli -- "Title"`: run CLI search.
+- `npm test`: run the Node test suite (HTTP contract, media probe, network guard, downloads, provider ranking, and frontend static checks).
 - `npm run lint`: run the configured ESLint file globs.
-- `npm run build`: currently prints a readiness message only; it does not compile or bundle assets.
-- No automated test command is configured in `package.json`.
+- `npm run build`: rebuild `public/tailwind.css`; a Browserslist `caniuse-lite` warning is tooling-only and does not fail the build.
 
 ## Repository Layout
 
