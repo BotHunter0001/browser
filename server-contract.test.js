@@ -82,6 +82,10 @@ test('HTTP contract: security headers, honest routes, and download validation', 
     const manifest = await (await fetch(`${base}/manifest.json`)).json();
     assert.deepEqual(manifest.resources, ['catalog']);
 
+    const favicon = await fetch(`${base}/favicon.ico`);
+    assert.equal(favicon.status, 200);
+    assert.match(favicon.headers.get('content-type') || '', /image\/svg\+xml/);
+
     const crossSite = await fetch(`${base}/api/downloads`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Origin: 'https://evil.example' },

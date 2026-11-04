@@ -98,6 +98,10 @@ app.use(express.static(path.join(__dirname, 'public'), {
   },
 }));
 
+app.get('/favicon.ico', (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'favicon.svg'));
+});
+
 // Very small per-IP rate limiter for the expensive API routes
 const hits = new Map();
 function rateLimit(max, windowMs) {
