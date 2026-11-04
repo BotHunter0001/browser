@@ -60,7 +60,7 @@ Test successful and malformed search results, empty results, incorrect IDs, unav
 - Validate path parameters, query parameters, provider IDs, candidate arrays, numeric bounds, and JSON objects at the boundary. Reject malformed input clearly and early.
 - Unknown `/api/*` routes should return a JSON 404. Do not let an SPA fallback return `200 text/html` for an API or protocol endpoint that promises JSON.
 - When a route is added to a manifest or public contract, implement and test the route before advertising it. Contract tests should enumerate advertised resources and verify status, content type, and response schema.
-- The current Stremio manifest advertises `catalog`, `meta`, and `stream`, but the current route implementation only contains catalog handlers. The Stremio catalog handler also needs to use or validate the requested media `type`. Re-check the live source before changing this state; do not assume `meta` or `stream` compatibility merely because the manifest lists them.
+- The Stremio manifest advertises only `catalog`, which is the resource actually implemented. The catalog handler validates the requested media `type` and maps the advertised `top`/`trending` catalog ids to provider shelves. Do not advertise `meta` or `stream` until those handlers (including ID round-tripping and per-episode streams) are implemented and tested.
 - `/api/hosts/rotate` currently reports that host rotation is unsupported with HTTP 501. Keep the UI and docs honest about this. Do not replace the response with a success-shaped placeholder unless a real gateway rotation is implemented.
 
 ## 5. Network Safety and Proxying

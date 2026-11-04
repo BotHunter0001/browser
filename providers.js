@@ -711,6 +711,19 @@ function isTitleMatchForSeriesQuery(candidateTitle, queryTitle) {
   return candidate.includes(query) || query.includes(candidate);
 }
 
+function isMatchingSeriesCandidate(item, title) {
+  if (!item || typeof item !== 'object') return false;
+  return item.provider !== 'addon' && registry[item.provider] && item.type === 'series' &&
+    item.subjectId && isTitleMatchForSeriesQuery(item.title, title);
+}
+
+function rankEpisodeCandidates(candidates, title) {
+  return (Array.isArray(candidates) ? candidates : [])
+    .filter((item) => isMatchingSeriesCandidate(item, title))
+    .sort((a, b) => Number(!isTitleMatchForSeriesQuery(a.title, title)) -
+      Number(!isTitleMatchForSeriesQuery(b.title, title)));
+}
+
 async function getEpisodeStreams(title, seasonNumber, episodeNumber, sourceCandidates = []) {
   const normalizedTitle = normalizeTitleForMatch(title);
   if (!normalizedTitle) return { provider: null, subjectId: null, releases: [] };
@@ -754,24 +767,11 @@ async function getEpisodeStreams(title, seasonNumber, episodeNumber, sourceCandi
     return null;
   };
 
-  const isMatchingCandidate = (item) => {
-    if (!item || typeof item !== 'object') return false;
-    return item.provider !== 'addon' && registry[item.provider] && item.type === 'series' &&
-      item.subjectId && isTitleMatchForSeriesQuery(item.title, title);
-  };
-  const rankCandidates = (candidates) => candidates
-    .filter(isMatchingCandidate)
-    .sort((a, b) => {
-      const aMatch = isTitleMatchForSeriesQuery(a.title, title);
-      const bMatch = isTitleMatchForSeriesQuery(b.title, title);
-      return Number(!aMatch) - Number(!bMatch);
-    });
-
-  const localResult = await resolveCandidates(rankCandidates(sourceCandidates));
+  const localResult = await resolveCandidates(rankEpisodeCandidates(sourceCandidates, title));
   if (localResult) return localResult;
 
   const searchResults = await searchAll(title);
-  const searchResult = await resolveCandidates(rankCandidates(searchResults));
+  const searchResult = await resolveCandidates(rankEpisodeCandidates(searchResults, title));
   if (searchResult) return searchResult;
 
   return { provider: null, subjectId: null, streamId: null, releases: [] };
@@ -835,6 +835,22 @@ async function getCatalogHomepage(provider = 'movieBoxWeb', filter = '', page = 
   // Genre aggregation above already queried the known drama catalog sources.
   // Other catalog requests retain the existing provider-first fallback flow.
   const primary = registry[targetProvider]?.instance;
+  const inferCatalogType = (catalogFilter) => {
+    const value = String(catalogFilter || '');
+    if (/^\/newWeb\/movie(?:[/?#]|$)/i.test(value)) return 'movie';
+    if (/^\/newWeb\/tv-series(?:[/?#]|$)/i.test(value)) return 'series';
+    return null;
+  };
+  const applyCatalogType = (catalogItems, catalogFilter) => {
+    const inferredType = inferCatalogType(catalogFilter);
+    if (!inferredType || !Array.isArray(catalogItems)) return catalogItems;
+    return catalogItems.map((item) => (
+      item && item.provider === 'movieBoxWeb'
+        ? { ...item, type: inferredType, typeVerified: true }
+        : item
+    ));
+  };
+
   if (targetProvider === 'movieBoxWeb' && !filter && !genre &&
       primary && typeof primary.catalog === 'function') {
     const categoryFilters = ['/newWeb/movie', '/newWeb/tv-series'];
@@ -850,18 +866,22 @@ async function getCatalogHomepage(provider = 'movieBoxWeb', filter = '', page = 
         console.warn(`[Catalog] MovieBox Web ${categoryFilters[index]} catalog failed:`, catalog.reason?.message || catalog.reason);
         return [];
       }
-      return Array.isArray(catalog.value) ? catalog.value : [];
+      return applyCatalogType(
+        Array.isArray(catalog.value) ? catalog.value : [],
+        categoryFilters[index]
+      );
     });
   } else if (primary && typeof primary.catalog === 'function') {
     try {
       const catalogFilter = targetProvider === 'movieBoxWeb' && genre === 'movies'
         ? '/newWeb/movie'
         : filter;
-      items = await withTimeout(
+      const catalogItems = await withTimeout(
         primary.catalog(catalogFilter, page),
         5500,
         `Catalog timeout for ${targetProvider}`
       );
+      items = applyCatalogType(catalogItems, catalogFilter);
     } catch (err) {
       console.warn(`[Catalog] Failed to load catalog from ${targetProvider}:`, err.message);
     }
@@ -982,4 +1002,5 @@ module.exports = {
   getCatalogHomepage,
   normalizeTitleForMatch,
   isTitleMatchForSeriesQuery,
+  rankEpisodeCandidates,
 };

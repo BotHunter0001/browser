@@ -97,6 +97,10 @@
               value=""
               placeholder="Search movies and series..."
               aria-label="Search movies and series"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded="false"
+              aria-controls="searchSuggestionsDropdown"
               class="w-full min-w-0 pl-11 pr-3 sm:pr-14 py-3 sm:py-4 bg-[#0c0b0a]/90 text-white border border-[#2f2924] focus:border-amber-500 focus:ring-1 focus:ring-amber-500 rounded-xl outline-none text-sm transition placeholder-slate-500 shadow-inner"
               required
               autocomplete="off"
@@ -114,8 +118,26 @@
               <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
             </svg>
           </button>
+          <!-- Vega IMDb search autocomplete dropdown -->
+          <div id="searchSuggestionsDropdown" role="listbox" aria-label="Search suggestions" class="absolute left-0 right-0 top-full mt-2 bg-[#12100e] border border-[#2f2924] rounded-xl shadow-2xl overflow-hidden z-50 hidden divide-y divide-[#211d19] max-h-96 overflow-y-auto"></div>
         </form>
 
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════════════
+         VEGA-STYLE CONTINUE WATCHING STRIP
+         ═════════════════════════════════════════════════════════ -->
+    <section id="continueWatchingSection" class="hidden space-y-2">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <svg class="w-4 h-4 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          <h2 class="text-xs uppercase font-mono tracking-widest text-amber-400/90 font-bold">Continue Watching</h2>
+        </div>
+        <button id="cwClearBtn" class="text-[11px] text-slate-500 hover:text-slate-300 font-mono transition cursor-pointer">Clear all</button>
+      </div>
+      <div id="continueWatchingStrip" class="flex gap-3 overflow-x-auto pb-2 scroll-smooth" style="scrollbar-width:thin;scrollbar-color:#2f2924 transparent;">
+        <!-- Cards injected by app.js -->
       </div>
     </section>
 
@@ -210,8 +232,49 @@
       </div>
     </section>
 
+    <!-- ═══════════════════════════════════════════════════════════
+         VEGA-STYLE HERO CAROUSEL — Rotating featured content banner
+         ═════════════════════════════════════════════════════════ -->
+    <section id="heroCarouselSection" class="hidden">
+      <div id="heroCarousel" class="relative overflow-hidden rounded-2xl bg-[#161412] border border-[#2f2924] shadow-2xl" style="min-height:260px;">
+        <!-- Slides injected by app.js -->
+        <div id="heroSlides" class="relative w-full h-full"></div>
+
+        <!-- Gradient overlay -->
+        <div class="absolute inset-0 pointer-events-none" style="background:linear-gradient(to right, rgba(12,11,10,0.95) 0%, rgba(12,11,10,0.6) 50%, rgba(12,11,10,0.15) 100%);"></div>
+
+        <!-- Content overlay (left side) -->
+        <div id="heroContent" class="absolute inset-0 flex flex-col justify-end p-5 sm:p-7 z-10 max-w-lg">
+          <div id="heroBadges" class="flex items-center gap-2 mb-2"></div>
+          <h2 id="heroTitle" class="text-xl sm:text-2xl md:text-3xl font-extrabold text-white leading-tight mb-2 drop-shadow-lg line-clamp-2"></h2>
+          <p id="heroDesc" class="text-xs sm:text-sm text-slate-300 line-clamp-2 mb-3 max-w-sm drop-shadow"></p>
+          <div class="flex items-center gap-2">
+            <button id="heroPlayBtn" class="flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-400 text-black font-bold text-sm rounded-xl shadow-lg transition shrink-0 cursor-pointer">
+              <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path d="M6.3 2.841A1.5 1.5 0 004 4.11v11.78a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z"/></svg>
+              <span>Play Now</span>
+            </button>
+            <button id="heroInfoBtn" class="flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 text-white font-semibold text-sm rounded-xl backdrop-blur-sm border border-white/10 transition shrink-0 cursor-pointer">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+              <span>Details</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Dot indicators (bottom-right) -->
+        <div id="heroDots" class="absolute bottom-4 right-5 z-10 flex items-center gap-1.5"></div>
+
+        <!-- Prev / Next arrows -->
+        <button id="heroPrev" class="absolute left-3 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full bg-black/50 hover:bg-black/80 text-white flex items-center justify-center transition backdrop-blur-sm border border-white/10 cursor-pointer" aria-label="Previous">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+        </button>
+        <button id="heroNext" class="absolute right-3 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full bg-black/50 hover:bg-black/80 text-white flex items-center justify-center transition backdrop-blur-sm border border-white/10 cursor-pointer" aria-label="Next">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+        </button>
+      </div>
+    </section>
+
     <!-- Error Banner -->
-    <div id="errorBanner" class="hidden p-4 rounded-xl bg-red-950/60 border border-red-800 text-red-200 text-sm flex items-start gap-3 shadow-lg">
+    <div id="errorBanner" role="alert" class="hidden p-4 rounded-xl bg-red-950/60 border border-red-800 text-red-200 text-sm flex items-start gap-3 shadow-lg">
       <svg class="w-5 h-5 text-red-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
       </svg>
@@ -219,7 +282,7 @@
         <div class="font-bold text-red-300">Request Error</div>
         <p class="text-xs text-red-300/80 mt-1" id="errorMessage"></p>
       </div>
-      <button onclick="document.getElementById('errorBanner').classList.add('hidden')" class="text-red-400 hover:text-red-200 text-xs font-mono">Dismiss</button>
+      <button id="dismissErrorBtn" type="button" class="text-red-400 hover:text-red-200 text-xs font-mono">Dismiss</button>
     </div>
 
     <!-- Results Section -->
@@ -430,6 +493,13 @@
                 <span>Download</span>
               </a>
 
+              <button id="queuePlayerStream" type="button" class="text-[11px] font-mono px-2.5 py-1 rounded-lg bg-[#211d19] hover:bg-emerald-900 text-emerald-300 border border-emerald-800/70 transition flex items-center gap-1 cursor-pointer" title="Save a resumable copy in the Downloads library">
+                <svg class="w-3 h-3 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                </svg>
+                <span>Queue</span>
+              </button>
+
               <a id="openStreamNewTab" href="#" target="_blank" rel="noopener noreferrer" class="text-[11px] font-mono px-2.5 py-1 rounded-lg bg-[#211d19] hover:bg-[#2c2621] text-slate-300 border border-[#2f2924] transition flex items-center gap-1">
                 <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
@@ -499,6 +569,19 @@
                 <option value="1.75">1.75×</option>
                 <option value="2">2×</option>
               </select>
+              <label for="sleepTimerSelect">Sleep timer</label>
+              <select id="sleepTimerSelect" aria-label="Sleep timer">
+                <option value="0">Off</option>
+                <option value="15">15 minutes</option>
+                <option value="30">30 minutes</option>
+                <option value="45">45 minutes</option>
+                <option value="60">60 minutes</option>
+                <option value="90">90 minutes</option>
+              </select>
+              <label class="player-settings-check">
+                <input id="autoNextToggle" type="checkbox" checked>
+                <span>Auto-play next episode</span>
+              </label>
               <span id="subtitleStatus" aria-live="polite"></span>
             </div>
           </div>
@@ -540,7 +623,7 @@
   </div>
 
   <!-- Providers Modal -->
-  <div id="providersModal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-sm">
+  <div id="providersModal" role="dialog" aria-modal="true" aria-labelledby="providersTitle" class="hidden fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-sm">
     <div class="glass-panel w-full max-w-4xl max-h-[88vh] rounded-2xl flex flex-col overflow-hidden border border-[#2f2924] shadow-2xl animate-in fade-in zoom-in-95 duration-150">
       
       <!-- Modal Header -->
@@ -553,7 +636,7 @@
           </div>
           <div>
             <div class="flex items-center gap-2">
-              <h3 class="text-base font-bold text-white tracking-tight">Streaming & Scraper Providers</h3>
+              <h3 id="providersTitle" class="text-base font-bold text-white tracking-tight">Streaming & Scraper Providers</h3>
               <span id="providersModalCount" class="text-[10px] font-mono font-semibold text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">50+ Providers</span>
             </div>
             <p class="text-[11px] text-slate-400">Select a specific provider or search across all sources with automatic provider switching.</p>
@@ -613,7 +696,7 @@
   </div>
 
   <!-- Watchlist & History Library Modal -->
-  <div id="libraryModal" class="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-3 sm:p-6 hidden">
+  <div id="libraryModal" role="dialog" aria-modal="true" aria-labelledby="libraryTitle" class="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-3 sm:p-6 hidden">
     <div class="glass-panel bg-[#12100e] border border-[#2f2924] rounded-2xl max-w-4xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
       
       <!-- Library Modal Header -->
@@ -625,12 +708,19 @@
             </svg>
           </div>
           <div>
-            <h3 class="text-base font-bold text-white tracking-tight">My Library</h3>
+            <h3 id="libraryTitle" class="text-base font-bold text-white tracking-tight">My Library</h3>
             <p class="text-[11px] text-slate-400">Your saved movies, series, and recently played streams</p>
           </div>
         </div>
 
         <div class="flex items-center gap-2">
+          <button id="libraryExportBtn" type="button" class="px-2.5 py-1.5 rounded-lg bg-[#211d19] hover:bg-[#2b2520] text-slate-200 border border-[#2f2924] text-xs font-semibold transition cursor-pointer" title="Export watchlist and history as JSON">
+            Export
+          </button>
+          <button id="libraryImportBtn" type="button" class="px-2.5 py-1.5 rounded-lg bg-[#211d19] hover:bg-[#2b2520] text-slate-200 border border-[#2f2924] text-xs font-semibold transition cursor-pointer" title="Import a CineSphere backup file">
+            Import
+          </button>
+          <input id="libraryImportFile" type="file" accept="application/json,.json" class="hidden">
           <button id="clearHistoryBtn" class="hidden px-2.5 py-1.5 rounded-lg bg-red-950/40 hover:bg-red-900/60 text-red-300 border border-red-800/60 text-xs font-semibold transition cursor-pointer">
             Clear History
           </button>
@@ -643,8 +733,8 @@
       </div>
 
       <!-- Library Tabs Bar -->
-      <div class="px-5 pt-3 border-b border-[#2f2924] bg-[#0c0b0a] flex items-center gap-3">
-        <button id="tabWatchlistBtn" class="pb-3 px-1 border-b-2 border-amber-400 text-white font-bold text-xs flex items-center gap-2 cursor-pointer transition">
+      <div role="tablist" aria-label="Library sections" class="px-5 pt-3 border-b border-[#2f2924] bg-[#0c0b0a] flex items-center gap-3">
+        <button id="tabWatchlistBtn" role="tab" aria-selected="true" aria-controls="libraryWatchlistContainer" class="pb-3 px-1 border-b-2 border-amber-400 text-white font-bold text-xs flex items-center gap-2 cursor-pointer transition">
           <svg class="w-4 h-4 text-amber-400" fill="currentColor" viewBox="0 0 20 20">
             <path d="M5 4a2 2 0 012-2h6a2 2 0 012 2v14l-5-2.5L5 18V4z" />
           </svg>
@@ -652,25 +742,38 @@
           <span id="libWatchlistBadge" class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">0</span>
         </button>
 
-        <button id="tabHistoryBtn" class="pb-3 px-1 border-b-2 border-transparent text-slate-400 hover:text-slate-200 font-semibold text-xs flex items-center gap-2 cursor-pointer transition">
+        <button id="tabHistoryBtn" role="tab" aria-selected="false" aria-controls="libraryHistoryContainer" class="pb-3 px-1 border-b-2 border-transparent text-slate-400 hover:text-slate-200 font-semibold text-xs flex items-center gap-2 cursor-pointer transition">
           <svg class="w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
           <span>Watch History</span>
           <span id="libHistoryBadge" class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-[#211d19] text-slate-300 border border-[#2f2924]">0</span>
         </button>
+
+        <button id="tabDownloadsBtn" role="tab" aria-selected="false" aria-controls="libraryDownloadsContainer" class="pb-3 px-1 border-b-2 border-transparent text-slate-400 hover:text-slate-200 font-semibold text-xs flex items-center gap-2 cursor-pointer transition">
+          <svg class="w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+          </svg>
+          <span>Downloads</span>
+          <span id="libDownloadsBadge" class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-[#211d19] text-slate-300 border border-[#2f2924]">0</span>
+        </button>
       </div>
 
       <!-- Tab Content Area -->
       <div class="flex-1 overflow-y-auto p-5 bg-[#0c0b0a]">
         <!-- Watchlist Container -->
-        <div id="libraryWatchlistContainer" class="space-y-4">
+        <div id="libraryWatchlistContainer" role="tabpanel" aria-labelledby="tabWatchlistBtn" class="space-y-4">
           <!-- Dynamically populated or empty state -->
         </div>
 
         <!-- History Container -->
-        <div id="libraryHistoryContainer" class="hidden space-y-4">
+        <div id="libraryHistoryContainer" role="tabpanel" aria-labelledby="tabHistoryBtn" class="hidden space-y-4">
           <!-- Dynamically populated or empty state -->
+        </div>
+
+        <!-- Downloads Container -->
+        <div id="libraryDownloadsContainer" role="tabpanel" aria-labelledby="tabDownloadsBtn" class="hidden space-y-4">
+          <!-- Dynamically populated download queue -->
         </div>
       </div>
 
@@ -704,7 +807,10 @@
   </footer>
 
   <!-- hls.js — in-browser HLS playback for browsers that don't natively support it -->
-  <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
+  <script
+    src="https://cdn.jsdelivr.net/npm/hls.js@1.7.4/dist/hls.min.js"
+    integrity="sha384-a7dbe053fec860959ddc8e124ebb6ac6a47fd9c010961217ec3fc7ad39c83048e3714a31d7ae5beec7bbb319a6df30e0"
+    crossorigin="anonymous"></script>
   <!-- Application Script -->
   <script src="/app.js?v=2.6.0"></script>
 </body>

@@ -130,7 +130,7 @@ Unknown `/api/*` paths return JSON 404. Other unmatched paths serve `public/inde
 ## Network Safety and Deployment
 
 - `safeFetch` accepts only HTTP(S), rejects URLs with embedded credentials, resolves destination addresses, and blocks loopback, link-local, unspecified, and multicast addresses. It revalidates each redirect hop and caps redirect count.
-- `ALLOW_PRIVATE_NETWORKS` defaults to true so BDIX/private-network providers can work. Setting it to `false` also blocks private ranges. This tradeoff is security-sensitive: the application has no authentication, and the server defaults to binding all interfaces (`0.0.0.0`). Restrict the bind address/network and disable private destinations before exposing it to untrusted users.
+- `ALLOW_PRIVATE_NETWORKS` defaults to `false`; private-network destinations (including BDIX integrations) require an explicit `ALLOW_PRIVATE_NETWORKS=true`. Loopback, link-local, multicast, and special-use ranges stay blocked. This tradeoff is security-sensitive: the application has no authentication and is intended to bind only to `127.0.0.1` unless an operator explicitly chooses remote exposure.
 - Proxy-supplied headers are restricted to `referer`, `origin`, `cookie`, `user-agent`, `authorization`, `accept`, and `accept-language`, with value length and CR/LF checks.
 - Media proxying preserves backpressure, forwards byte-range metadata, and aborts upstream requests when the client disconnects.
 - Security headers include `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and `X-Frame-Options: DENY`. The JSON body limit is 100 KB.
@@ -140,8 +140,8 @@ Unknown `/api/*` paths return JSON 404. Other unmatched paths serve `public/inde
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `PORT` | `3000` | HTTP port. |
-| `HOST` | `0.0.0.0` | Bind address. Use `127.0.0.1` to restrict access to the local machine. |
-| `ALLOW_PRIVATE_NETWORKS` | Enabled unless set to `false` | Allow private destination ranges for proxy requests; required by some BDIX integrations. |
+| `HOST` | `127.0.0.1` | Bind address. Use `0.0.0.0` only for intentional, access-controlled remote exposure. |
+| `ALLOW_PRIVATE_NETWORKS` | `false` | Set to `true` to allow private destination ranges for approved BDIX integrations. |
 | `FOURKDH_BASE` | Defined in `fourkdhhub.js` | Override the 4KHDHub upstream base URL. |
 
 The project does not load `.env` automatically. `.env.example` is a configuration reference only; export variables in the process environment or use deployment tooling that supplies them.
