@@ -332,6 +332,11 @@ const GENRE_SEARCH_PRIORITIES = {
     'autoEmbed',
     'mxplayer',
     'movielinkdb',
+    'eonMovies',
+    'youtube',
+    'torrentio',
+    'circleftp',
+    'dhakaflix',
   ],
 };
 
