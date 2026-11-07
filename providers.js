@@ -633,7 +633,7 @@ async function getStreams(id, providerName = 'movieBoxWeb', opts = {}) {
   const entry = registry[providerName];
   const p = entry?.instance || registry.movieBoxWeb?.instance || registry.addon.instance;
   try {
-    const releases = collect(await withTimeout(p.streams(id), timeoutMs, `streams(${providerName}) timed out`), providerName);
+    const releases = collect(await withTimeout(p.streams(id, { type: opts.type }), timeoutMs, `streams(${providerName}) timed out`), providerName);
     results.push(...releases);
   } catch (err) {
     console.warn(`[getStreams] Primary provider ${providerName} failed for id ${id}: ${err.message}. Switching to another provider...`);
@@ -641,16 +641,24 @@ async function getStreams(id, providerName = 'movieBoxWeb', opts = {}) {
 
   // 2. Automatic fallback: switch providers when none/few sources were found
   const minSources = Number.isInteger(opts.minSources) ? Math.max(1, opts.minSources) : 1;
+  const maxFallbacks = Number.isInteger(opts.maxFallbacks) ? Math.max(0, opts.maxFallbacks) : Infinity;
+  let fallbackAttempts = 0;
 
-  if (results.length < minSources) {
+  if (results.length < minSources && maxFallbacks > 0) {
     // A. Check if the item already has alternateSources recorded from search deduplication
     const alternates = Array.isArray(opts.alternateSources) ? opts.alternateSources : [];
     for (const alt of alternates) {
       if (!alt || !alt.provider || tried.has(alt.provider) || !registry[alt.provider]) continue;
+      if (fallbackAttempts >= maxFallbacks) break;
+      fallbackAttempts += 1;
       tried.add(alt.provider);
       try {
         const altReleases = collect(
-          await withTimeout(registry[alt.provider].instance.streams(alt.subjectId), timeoutMs, `streams(${alt.provider}) timed out`),
+          await withTimeout(
+            registry[alt.provider].instance.streams(alt.subjectId, { type: alt.type || opts.type }),
+            timeoutMs,
+            `streams(${alt.provider}) timed out`
+          ),
           alt.provider
         );
         if (altReleases.length > 0) {
@@ -667,10 +675,12 @@ async function getStreams(id, providerName = 'movieBoxWeb', opts = {}) {
     const candidates = getFallbackCandidates(providerName, id).slice(0, 5);
     for (const name of candidates) {
       if (tried.has(name)) continue;
+      if (fallbackAttempts >= maxFallbacks) break;
+      fallbackAttempts += 1;
       tried.add(name);
       try {
         const rels = await withTimeout(
-          registry[name].instance.streams(id),
+          registry[name].instance.streams(id, { type: opts.type }),
           timeoutMs,
           `streams(${name}) timed out`
         );
@@ -705,6 +715,8 @@ async function getStreams(id, providerName = 'movieBoxWeb', opts = {}) {
 
       for (const fbName of fallbackList) {
         if (tried.has(fbName) || !registry[fbName] || registry[fbName].disabled) continue;
+        if (fallbackAttempts >= maxFallbacks) break;
+        fallbackAttempts += 1;
         tried.add(fbName);
         try {
           const searchItems = await withTimeout(registry[fbName].instance.search(titleToSearch), 6000, `search(${fbName}) timed out`);
@@ -721,8 +733,11 @@ async function getStreams(id, providerName = 'movieBoxWeb', opts = {}) {
             : null;
 
           if (matchedItem && matchedItem.subjectId) {
+            const matchedType = matchedItem.type === 'series' || opts.type === 'series' || opts.type === 'anime'
+              ? 'series'
+              : 'movie';
             const fbReleases = collect(
-              await withTimeout(registry[fbName].instance.streams(matchedItem.subjectId), timeoutMs, `streams(${fbName}) timed out`),
+              await withTimeout(registry[fbName].instance.streams(matchedItem.subjectId, { type: matchedType }), timeoutMs, `streams(${fbName}) timed out`),
               fbName
             );
             if (fbReleases.length > 0) {
@@ -789,8 +804,9 @@ async function getEpisodeStreams(title, seasonNumber, episodeNumber, sourceCandi
         for (const episodeLink of episodeLinks) {
           const releases = await getStreams(episodeLink, candidate.provider, {
             minSources: 1,
-            maxFallbacks: 3,
+            maxFallbacks: 0,
             timeoutMs: 10000,
+            type: 'series',
           });
           if (releases.length > 0) {
             return {

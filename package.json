@@ -9,6 +9,8 @@
 		"start": "node server.js",
 		"build": "npm run build:css && node -e 'console.log(\"Build ready\")'",
 		"build:css": "tailwindcss -i ./public/tailwind-input.css -o ./public/tailwind.css --minify",
+		"providers:check": "node scripts/update-vega-providers.js --check",
+		"providers:update": "node scripts/update-vega-providers.js",
 		"lint": "eslint *.js lib/**/*.js public/app.js",
 		"test": "node --test '*.test.js' 'lib/**/*.test.js'",
 		"cli": "node index.js"

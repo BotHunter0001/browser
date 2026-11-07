@@ -8,6 +8,8 @@
 | Start server | `npm start` | Runs the same entry point as development. |
 | CLI search | `npm run cli -- "Dune"` | Searches providers and prints up to 15 results; defaults to `Inception`. |
 | Lint | `npm run lint` | ESLint; the current baseline may include warnings. |
+| Provider update check | `npm run providers:check` | Compares vendored Vega provider versions and base URLs with the official GitHub repo. |
+| Update Vega providers | `npm run providers:update` | Validates and swaps in a fresh `vega-manifest.json`, `vega-urls.json`, and `vega-dist/`; restart afterward. |
 | Build check | `npm run build` | Rebuilds Tailwind CSS and verifies the build pipeline. |
 | Tests | `npm test` | Node test runner: frontend contract, provider, netGuard, and download integration tests. |
 

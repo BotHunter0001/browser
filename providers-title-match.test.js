@@ -45,5 +45,33 @@ test('web releases drop torrent-only mirrors and normalize protocol-relative URL
   assert.equal(normalized.mirrors[0].resolverUrl, 'https://cdn.example/stream.m3u8');
 });
 
+test('getStreams forwards media type and honors a zero fallback budget', async () => {
+  const { registry, getStreams } = require('./providers');
+  const original = registry.movieBoxWeb;
+  const seenContexts = [];
+  registry.movieBoxWeb = {
+    ...original,
+    instance: {
+      async streams(_id, context) {
+        seenContexts.push(context);
+        return [];
+      },
+    },
+  };
+
+  try {
+    const releases = await getStreams('series:test:1:1', 'movieBoxWeb', {
+      minSources: 1,
+      maxFallbacks: 0,
+      type: 'series',
+    });
+    assert.deepEqual(releases, []);
+    assert.equal(seenContexts.length, 1, 'only the primary provider is queried');
+    assert.equal(seenContexts[0].type, 'series');
+  } finally {
+    registry.movieBoxWeb = original;
+  }
+});
+
 const _normalized = normalizeTitleForMatch('The Office US');
 assert.equal(_normalized.includes('theoffice'), true);
