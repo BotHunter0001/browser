@@ -1,4 +1,6 @@
 node_modules/
 vega-app-main/ 
 vega-providers-main/
+.vega-backup/
+.vega-update-*/
 downloads/

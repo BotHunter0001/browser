@@ -372,6 +372,7 @@ if (seriesAudioSelect) {
   seriesAudioSelect.addEventListener('change', () => {
     if (activeMedia) {
       renderSeriesHierarchy(activeMedia);
+      updateNextEpisodeUi();
     }
   });
 }
@@ -431,6 +432,14 @@ const playerExitFullscreenIcon = document.getElementById('playerExitFullscreenIc
 const queuePlayerStream = document.getElementById('queuePlayerStream');
 const sleepTimerSelect = document.getElementById('sleepTimerSelect');
 const autoNextToggle = document.getElementById('autoNextToggle');
+const nextEpisodeBtn = document.getElementById('nextEpisodeBtn');
+const nextEpisodeBtnLabel = document.getElementById('nextEpisodeBtnLabel');
+const playerSeekFeedback = document.getElementById('playerSeekFeedback');
+const playerSeekDelta = document.getElementById('playerSeekDelta');
+const playerSeekTarget = document.getElementById('playerSeekTarget');
+const playerSeekFeedbackRange = document.getElementById('playerSeekFeedbackRange');
+const playerSeekFeedbackMarker = document.getElementById('playerSeekFeedbackMarker');
+const playerSeekTooltip = document.getElementById('playerSeekTooltip');
 let playerControlsTimeout = null;
 let sleepTimerHandle = null;
 const PLAYER_VOLUME_KEY = 'cinesphere_player_volume';
@@ -494,6 +503,181 @@ function formatPlayerTime(seconds) {
     : `${minutes}:${String(remainder).padStart(2, '0')}`;
 }
 
+// ── Seek feedback ────────────────────────────────────────────────────────
+// The native <video> can keep showing the previous frame for a moment after a
+// seek. These helpers give immediate visual proof of where the jump landed and
+// how much was skipped, instead of waiting for playback/buffering to catch up.
+let seekFeedbackTimer = null;
+let seekTooltipHideTimer = null;
+let activeScrub = null;
+const SEEK_FEEDBACK_HOLD_MS = 1150;
+
+function formatSeekDelta(seconds) {
+  const rounded = Math.round(Number(seconds) || 0);
+  const sign = rounded < 0 ? '−' : '+';
+  const abs = Math.abs(rounded);
+  if (abs < 60) return `${sign}${abs}s`;
+  const hours = Math.floor(abs / 3600);
+  const minutes = Math.floor((abs % 3600) / 60);
+  const secs = abs % 60;
+  return hours
+    ? `${sign}${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+    : `${sign}${minutes}:${String(secs).padStart(2, '0')}`;
+}
+
+function isTimeBuffered(seconds) {
+  if (!videoPlayer || !Number.isFinite(seconds)) return false;
+  try {
+    const ranges = videoPlayer.buffered;
+    for (let i = 0; i < ranges.length; i += 1) {
+      if (seconds >= ranges.start(i) - 0.25 && seconds <= ranges.end(i) + 0.25) return true;
+    }
+  } catch {
+    // Buffered ranges may be unavailable while the source is loading.
+  }
+  return false;
+}
+
+function hideSeekFeedback() {
+  if (!playerSeekFeedback) return;
+  if (seekFeedbackTimer) {
+    clearTimeout(seekFeedbackTimer);
+    seekFeedbackTimer = null;
+  }
+  playerSeekFeedback.classList.remove('show', 'is-forward', 'is-backward');
+}
+
+function showSeekFeedback(fromSeconds, toSeconds) {
+  if (!playerSeekFeedback) return;
+  const from = Number.isFinite(fromSeconds) ? fromSeconds : toSeconds;
+  const to = Number.isFinite(toSeconds) ? toSeconds : from;
+  const duration = Number.isFinite(videoPlayer?.duration) && videoPlayer.duration > 0
+    ? videoPlayer.duration
+    : 0;
+
+  if (seekFeedbackTimer) {
+    clearTimeout(seekFeedbackTimer);
+    seekFeedbackTimer = null;
+  }
+
+  const directionClass = to < from ? 'is-backward' : 'is-forward';
+  const isVisible = playerSeekFeedback.classList.contains('show');
+  const sameDirection = playerSeekFeedback.classList.contains(directionClass);
+  if (!isVisible || !sameDirection) {
+    playerSeekFeedback.classList.remove('show', 'is-forward', 'is-backward');
+    // Restart the slide/pop animation only when the HUD was hidden or the
+    // direction changed. Continuous scrubbing should not flicker every pixel.
+    void playerSeekFeedback.offsetWidth;
+    playerSeekFeedback.classList.add('show', directionClass);
+  }
+
+  if (playerSeekDelta) playerSeekDelta.textContent = formatSeekDelta(to - from);
+  if (playerSeekTarget) {
+    playerSeekTarget.textContent = duration > 0
+      ? `${formatPlayerTime(to)} / ${formatPlayerTime(duration)}`
+      : formatPlayerTime(to);
+  }
+  if (duration > 0 && playerSeekFeedbackRange && playerSeekFeedbackMarker) {
+    const fromPercent = Math.max(0, Math.min(100, (from / duration) * 100));
+    const toPercent = Math.max(0, Math.min(100, (to / duration) * 100));
+    playerSeekFeedbackRange.style.left = `${Math.min(fromPercent, toPercent)}%`;
+    playerSeekFeedbackRange.style.width = `${Math.abs(toPercent - fromPercent)}%`;
+    playerSeekFeedbackMarker.style.left = `${toPercent}%`;
+  } else if (playerSeekFeedbackRange && playerSeekFeedbackMarker) {
+    playerSeekFeedbackRange.style.width = '0%';
+    playerSeekFeedbackMarker.style.left = '0%';
+  }
+
+  seekFeedbackTimer = setTimeout(() => {
+    seekFeedbackTimer = null;
+    playerSeekFeedback.classList.remove('show');
+  }, SEEK_FEEDBACK_HOLD_MS);
+}
+
+/**
+ * Seek to a timestamp and paint the seek UI immediately. `from` lets callers
+ * describe the size of a drag from where the drag started rather than from the
+ * intermediate position of the last input event.
+ */
+function seekPlayerTo(targetSeconds, { from = null, scrubbing = false } = {}) {
+  if (!videoPlayer) return;
+  const duration = Number.isFinite(videoPlayer.duration) && videoPlayer.duration > 0
+    ? videoPlayer.duration
+    : null;
+  const rawStart = Number.isFinite(from) ? from : videoPlayer.currentTime;
+  const start = Number.isFinite(rawStart) ? rawStart : 0;
+  const target = Number(targetSeconds);
+  if (!Number.isFinite(target)) return;
+  const bounded = Math.max(0, duration ? Math.min(duration, target) : target);
+
+  try {
+    videoPlayer.currentTime = bounded;
+  } catch {
+    return;
+  }
+
+  // Do not wait for timeupdate: update the visible time and bar right away.
+  if (playerCurrentTime) playerCurrentTime.textContent = formatPlayerTime(bounded);
+  if (playerSeek && duration) {
+    const progress = (bounded / duration) * 100;
+    playerSeek.value = String(Math.round(progress * 10));
+    playerSeek.style.setProperty('--seek-progress', `${progress}%`);
+    playerSeek.setAttribute(
+      'aria-valuetext',
+      `${formatPlayerTime(bounded)} of ${formatPlayerTime(duration)}`
+    );
+  }
+  showSeekFeedback(start, bounded);
+  showPlayerControls();
+  if (!scrubbing && !isTimeBuffered(bounded)) {
+    setPlayerLoading(true, `Seeking to ${formatPlayerTime(bounded)}…`);
+  }
+}
+
+function positionSeekTooltip(clientX) {
+  if (!playerSeek || !playerSeekTooltip || !videoPlayer || !videoPlayerContainer) return;
+  const duration = videoPlayer.duration;
+  if (!Number.isFinite(duration) || duration <= 0) return;
+  const seekRect = playerSeek.getBoundingClientRect();
+  const containerRect = videoPlayerContainer.getBoundingClientRect();
+  if (!seekRect.width || !containerRect.width) return;
+  const ratio = Math.max(0, Math.min(1, (clientX - seekRect.left) / seekRect.width));
+  const target = ratio * duration;
+  playerSeekTooltip.textContent = formatPlayerTime(target);
+  const left = Math.max(28, Math.min(containerRect.width - 28, clientX - containerRect.left));
+  const bottom = Math.max(12, containerRect.bottom - seekRect.top + 10);
+  playerSeekTooltip.style.left = `${left}px`;
+  playerSeekTooltip.style.bottom = `${bottom}px`;
+  playerSeekTooltip.classList.add('show');
+}
+
+function positionSeekTooltipFromValue() {
+  if (!playerSeek || !playerSeekTooltip || !videoPlayer) return;
+  const duration = videoPlayer.duration;
+  if (!Number.isFinite(duration) || duration <= 0) return;
+  const seekRect = playerSeek.getBoundingClientRect();
+  if (!seekRect.width) return;
+  const ratio = Number(playerSeek.value) / 1000;
+  positionSeekTooltip(seekRect.left + ratio * seekRect.width);
+}
+
+function hideSeekTooltip(delay = 0) {
+  if (!playerSeekTooltip) return;
+  if (seekTooltipHideTimer) {
+    clearTimeout(seekTooltipHideTimer);
+    seekTooltipHideTimer = null;
+  }
+  const apply = () => {
+    seekTooltipHideTimer = null;
+    if (!activeScrub) playerSeekTooltip.classList.remove('show');
+  };
+  if (delay > 0) {
+    seekTooltipHideTimer = setTimeout(apply, delay);
+  } else {
+    apply();
+  }
+}
+
 function updatePlayerControls() {
   if (!videoPlayer) return;
   const duration = videoPlayer.duration;
@@ -506,6 +690,10 @@ function updatePlayerControls() {
     playerSeek.disabled = !hasDuration;
     playerSeek.value = String(Math.round(progress * 10));
     playerSeek.style.setProperty('--seek-progress', `${progress}%`);
+    playerSeek.setAttribute(
+      'aria-valuetext',
+      `${formatPlayerTime(videoPlayer.currentTime)} of ${formatPlayerTime(duration)}`
+    );
   }
 
   const playing = !videoPlayer.paused && !videoPlayer.ended;
@@ -550,6 +738,7 @@ function showPlayerControls() {
   if (playerControlsTimeout) clearTimeout(playerControlsTimeout);
   if (!videoPlayer?.paused && !videoPlayer?.ended) {
     playerControlsTimeout = setTimeout(() => {
+      if (activeScrub) return;
       if (!playerSettingsMenu?.classList.contains('hidden')) return;
       videoPlayerContainer.classList.add('controls-hidden');
     }, 2600);
@@ -580,6 +769,7 @@ videoPlayer?.addEventListener('waiting', () => setPlayerLoading(true, 'Buffering
 videoPlayer?.addEventListener('stalled', () => setPlayerLoading(true, 'Stream stalled; waiting for data...'));
 videoPlayer?.addEventListener('canplay', () => setPlayerLoading(false));
 videoPlayer?.addEventListener('playing', () => setPlayerLoading(false));
+videoPlayer?.addEventListener('seeked', () => setPlayerLoading(false));
 videoPlayer?.addEventListener('error', () => setPlayerLoading(false));
 document.addEventListener('fullscreenchange', updatePlayerControls);
 document.addEventListener('fullscreenchange', () => {
@@ -621,22 +811,66 @@ playerFitBtn?.addEventListener('click', () => {
 });
 
 playerBackBtn?.addEventListener('click', () => {
-  if (videoPlayer && Number.isFinite(videoPlayer.currentTime)) {
-    videoPlayer.currentTime = Math.max(0, videoPlayer.currentTime - 10);
-  }
+  if (!videoPlayer || !Number.isFinite(videoPlayer.currentTime)) return;
+  seekPlayerTo(Math.max(0, videoPlayer.currentTime - 10));
 });
 
 playerForwardBtn?.addEventListener('click', () => {
-  if (videoPlayer && Number.isFinite(videoPlayer.currentTime)) {
-    const end = Number.isFinite(videoPlayer.duration) ? videoPlayer.duration : Infinity;
-    videoPlayer.currentTime = Math.min(end, videoPlayer.currentTime + 10);
-  }
+  if (!videoPlayer || !Number.isFinite(videoPlayer.currentTime)) return;
+  const end = Number.isFinite(videoPlayer.duration) ? videoPlayer.duration : Infinity;
+  seekPlayerTo(Math.min(end, videoPlayer.currentTime + 10));
+});
+
+nextEpisodeBtn?.addEventListener('click', () => {
+  const nextContext = getNextEpisodeContext();
+  if (!nextContext) return;
+  cancelAutoNext();
+  playNextEpisode(nextContext);
+});
+
+playerSeek?.addEventListener('pointerdown', (event) => {
+  if (!videoPlayer) return;
+  activeScrub = { from: videoPlayer.currentTime };
+  positionSeekTooltip(event.clientX);
+});
+
+playerSeek?.addEventListener('pointermove', (event) => {
+  positionSeekTooltip(event.clientX);
+});
+
+playerSeek?.addEventListener('pointerleave', () => {
+  if (!activeScrub) hideSeekTooltip();
 });
 
 playerSeek?.addEventListener('input', () => {
   if (!videoPlayer || !Number.isFinite(videoPlayer.duration) || videoPlayer.duration <= 0) return;
   const progress = Number(playerSeek.value) / 1000;
-  videoPlayer.currentTime = Math.max(0, Math.min(videoPlayer.duration, progress * videoPlayer.duration));
+  const target = Math.max(0, Math.min(videoPlayer.duration, progress * videoPlayer.duration));
+  seekPlayerTo(target, {
+    from: activeScrub ? activeScrub.from : videoPlayer.currentTime,
+    scrubbing: Boolean(activeScrub),
+  });
+  positionSeekTooltipFromValue();
+});
+
+playerSeek?.addEventListener('change', () => {
+  if (!videoPlayer || !Number.isFinite(videoPlayer.currentTime)) return;
+  if (!isTimeBuffered(videoPlayer.currentTime)) {
+    setPlayerLoading(true, `Seeking to ${formatPlayerTime(videoPlayer.currentTime)}…`);
+  }
+  hideSeekTooltip(700);
+});
+
+window.addEventListener('pointerup', () => {
+  if (!activeScrub) return;
+  activeScrub = null;
+  hideSeekTooltip(700);
+});
+
+window.addEventListener('pointercancel', () => {
+  if (!activeScrub) return;
+  activeScrub = null;
+  hideSeekTooltip(0);
 });
 
 playerCaptionsBtn?.addEventListener('click', () => {
@@ -721,7 +955,7 @@ document.addEventListener('keydown', (event) => {
 
   if (seekBy && Number.isFinite(videoPlayer.duration)) {
     event.preventDefault();
-    videoPlayer.currentTime = Math.max(0, Math.min(videoPlayer.duration, videoPlayer.currentTime + seekBy));
+    seekPlayerTo(Math.max(0, Math.min(videoPlayer.duration, videoPlayer.currentTime + seekBy)));
   } else if (volumeBy) {
     event.preventDefault();
     setPlayerVolume(videoPlayer.volume * 100 + volumeBy);
@@ -730,13 +964,16 @@ document.addEventListener('keydown', (event) => {
     playerPlayBtn?.click();
   } else if (key === 'Home' && Number.isFinite(videoPlayer.duration)) {
     event.preventDefault();
-    videoPlayer.currentTime = 0;
+    seekPlayerTo(0);
   } else if (key === 'End' && Number.isFinite(videoPlayer.duration)) {
     event.preventDefault();
-    videoPlayer.currentTime = videoPlayer.duration;
+    seekPlayerTo(videoPlayer.duration);
   } else if (lower === 'm') {
     event.preventDefault();
     playerMuteBtn?.click();
+  } else if (lower === 'n' && nextEpisodeBtn && !nextEpisodeBtn.disabled && !nextEpisodeBtn.classList.contains('hidden')) {
+    event.preventDefault();
+    nextEpisodeBtn.click();
   } else if (lower === 'f') {
     event.preventDefault();
     playerFullscreenBtn?.click();
@@ -1070,75 +1307,257 @@ function applyPendingResumePosition() {
 
 // Auto-next episode state (Vega-inspired: advance at WATCHED_FRACTION = 0.85)
 const WATCHED_FRACTION = 0.85;
+const AUTO_NEXT_SECONDS = 7;
 let autoNextTriggered = false;
 let autoNextCountdownTimer = null;
-let autoNextEpisodeContext = null;
+let autoNextDismissed = false;
+let nextEpisodeLoading = false;
+
+/**
+ * Series-only episode navigation. The old implementation scraped DOM buttons,
+ * which failed when the next season was filtered out of the hierarchy. These
+ * helpers walk the full season data instead.
+ */
+function isSeriesMedia(media) {
+  if (!media || typeof media !== 'object') return false;
+  if (media.type === 'series' || media.type === 'tv' || media.type === 'anime' || media.isSeries) {
+    return true;
+  }
+  return Array.isArray(media.seasons) &&
+    media.seasons.some((season) => Array.isArray(season?.episodes) && season.episodes.length > 0);
+}
+
+function getSeriesEpisodeEntries(media = activeMedia) {
+  const seasons = Array.isArray(media?.seasons) ? media.seasons : [];
+  if (!seasons.length) return [];
+  const selectedAudio = String(seriesAudioSelect?.value || 'all').toLowerCase();
+  const entries = [];
+
+  seasons.forEach((season, seasonIndex) => {
+    const seasonNumber = Number(
+      getSeasonNumberFromValue(season) ?? season?.seasonNumber ?? seasonIndex + 1
+    ) || seasonIndex + 1;
+    const episodes = Array.isArray(season?.episodes) ? season.episodes : [];
+    const filteredEpisodes = filterSeriesEpisodesForAudio(episodes, selectedAudio, media);
+
+    filteredEpisodes.forEach((episode, episodeIndex) => {
+      const episodeNumber = getEpisodeDisplayNumber(episode, episodeIndex);
+      entries.push({
+        season: seasonNumber,
+        episode: episodeNumber,
+        audio: getEpisodeAudioLabel(episode, media) || 'original',
+        title: String(episode?.title || episode?.name || episode?.label || `Episode ${episodeNumber}`),
+        streamId: episode?.streamId || episode?.link || media?.subjectId || '',
+        provider: media?.provider || 'addon',
+        seasonIndex,
+        episodeIndex,
+      });
+    });
+  });
+
+  entries.sort((a, b) =>
+    a.season - b.season ||
+    a.episode - b.episode ||
+    a.seasonIndex - b.seasonIndex ||
+    a.episodeIndex - b.episodeIndex
+  );
+  return entries;
+}
+
+/**
+ * Resolve the first playable episode for the current season/audio filters.
+ * Used by "View Available Streaming Sources" so a series does not query its
+ * series-level ID (which most providers cannot turn into a playable source).
+ */
+function getFirstEpisodeContext(media = activeMedia) {
+  if (!isSeriesMedia(media)) return null;
+  const entries = getSeriesEpisodeEntries(media);
+  if (!entries.length) return null;
+
+  const selectedSeason = String(seriesSeasonSelect?.value || 'all');
+  const candidates = selectedSeason === 'all'
+    ? entries
+    : entries.filter((entry) => String(entry.season) === selectedSeason);
+  const first = (candidates.length ? candidates : entries)[0];
+
+  return {
+    streamId: first.streamId,
+    provider: first.provider,
+    title: media?.title || 'Series',
+    episodeTitle: first.title,
+    season: first.season,
+    episode: first.episode,
+    audio: first.audio,
+  };
+}
+
+/**
+ * Highlight the episode whose sources are currently loaded so the user can
+ * see which row the "View Sources" action selected.
+ */
+function markSelectedEpisode(season, episode, audio = null) {
+  if (!seriesSeasonsList) return;
+  const targetSeason = Number(season);
+  const targetEpisode = Number(episode);
+  const targetAudio = audio ? String(audio).toLowerCase() : null;
+
+  seriesSeasonsList.querySelectorAll('[data-action="load-streams"]').forEach((button) => {
+    const matches = Number(button.dataset.season) === targetSeason &&
+      Number(button.dataset.episode) === targetEpisode &&
+      (!targetAudio || String(button.dataset.audio || '').toLowerCase() === targetAudio);
+    const row = button.closest('.episode-row');
+    if (row) row.classList.toggle('episode-selected', matches);
+    button.setAttribute('aria-pressed', matches ? 'true' : 'false');
+  });
+}
+
+
+function getNextEpisodeContext() {
+  if (!isSeriesMedia(activeMedia)) return null;
+  if (activeStreamContext?.season == null || activeStreamContext?.episode == null) return null;
+  const currentSeason = Number(activeStreamContext.season);
+  const currentEpisode = Number(activeStreamContext.episode);
+  if (!Number.isFinite(currentSeason) || !Number.isFinite(currentEpisode) || currentEpisode <= 0) return null;
+
+  const entries = getSeriesEpisodeEntries();
+  if (!entries.length) return null;
+  const currentAudio = String(activeStreamContext.audio || '').toLowerCase();
+  const laterEpisodes = entries.filter((entry) =>
+    entry.season > currentSeason ||
+    (entry.season === currentSeason && entry.episode > currentEpisode)
+  );
+  if (!laterEpisodes.length) return null;
+
+  const next = (currentAudio && laterEpisodes.find(
+    (entry) => String(entry.audio).toLowerCase() === currentAudio
+  )) || laterEpisodes[0];
+
+  return {
+    streamId: next.streamId,
+    provider: next.provider,
+    title: `${next.title} · S${next.season}·E${next.episode}`,
+    seriesTitle: activeMedia?.title || 'Series',
+    season: next.season,
+    episode: next.episode,
+    audio: next.audio,
+  };
+}
+
+function updateNextEpisodeUi() {
+  if (!nextEpisodeBtn) return;
+  const currentEpisode = Number(activeStreamContext?.episode);
+  const showForSeries = isSeriesMedia(activeMedia) &&
+    activeStreamContext?.episode != null &&
+    Number.isFinite(currentEpisode) &&
+    currentEpisode > 0;
+
+  if (!showForSeries) {
+    nextEpisodeBtn.classList.add('hidden');
+    nextEpisodeBtn.disabled = true;
+    nextEpisodeBtn.setAttribute('aria-label', 'Next episode unavailable');
+    nextEpisodeBtn.title = 'Next episode unavailable';
+    return;
+  }
+
+  const nextContext = getNextEpisodeContext();
+  nextEpisodeBtn.classList.remove('hidden');
+  nextEpisodeBtn.disabled = !nextContext || nextEpisodeLoading;
+
+  if (nextContext) {
+    const label = `S${nextContext.season}·E${nextContext.episode}`;
+    if (nextEpisodeBtnLabel) nextEpisodeBtnLabel.textContent = 'Next';
+    nextEpisodeBtn.title = `Next episode: ${label} (N)`;
+    nextEpisodeBtn.setAttribute('aria-label', `Next episode: ${label}`);
+  } else {
+    if (nextEpisodeBtnLabel) nextEpisodeBtnLabel.textContent = 'Next';
+    nextEpisodeBtn.title = 'You are on the last episode';
+    nextEpisodeBtn.setAttribute('aria-label', 'No next episode');
+  }
+}
 
 function cancelAutoNext() {
   if (autoNextCountdownTimer) {
-    clearTimeout(autoNextCountdownTimer);
+    clearInterval(autoNextCountdownTimer);
     autoNextCountdownTimer = null;
   }
-  autoNextEpisodeContext = null;
   autoNextTriggered = false;
   const overlay = document.getElementById('autoNextOverlay');
   if (overlay) overlay.remove();
 }
 
 function triggerAutoNextCountdown(nextCtx) {
-  if (autoNextTriggered || !autoNextEnabled()) return;
+  if (!nextCtx || autoNextTriggered || autoNextDismissed || !autoNextEnabled()) return;
   autoNextTriggered = true;
-  autoNextEpisodeContext = nextCtx;
 
-  const playerSection = document.getElementById('playerSection');
-  if (playerSection) {
+  const host = videoPlayerContainer || playerContainer;
+  if (host) {
     const old = document.getElementById('autoNextOverlay');
     if (old) old.remove();
     const overlay = document.createElement('div');
     overlay.id = 'autoNextOverlay';
-    overlay.className = 'absolute bottom-16 right-4 z-50 p-3 bg-black/90 border border-amber-500/40 rounded-xl backdrop-blur-md shadow-2xl text-left';
-    overlay.style.minWidth = '220px';
+    overlay.className = 'player-up-next';
     overlay.innerHTML = `
-      <div class="text-[10px] font-bold text-amber-400 uppercase tracking-wider mb-1 flex items-center justify-between">
-        <span>Up Next (Auto-play in 7s)</span>
-        <button id="autoNextClose" class="text-slate-400 hover:text-white text-xs font-mono">✕</button>
+      <div class="player-up-next-head">
+        <span>Up Next</span>
+        <button id="autoNextClose" class="player-up-next-close" type="button" aria-label="Dismiss next episode prompt">✕</button>
       </div>
-      <div class="text-xs text-white font-semibold mb-2.5 truncate" id="autoNextLabel">${escapeHtml(nextCtx.title || 'Next Episode')}</div>
-      <div class="flex items-center gap-2">
-        <button id="autoNextPlayNow" class="flex-1 py-1.5 px-3 bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs rounded-lg transition cursor-pointer">Play Now</button>
-        <button id="autoNextCancel" class="py-1.5 px-3 bg-white/10 hover:bg-white/20 text-slate-300 text-xs rounded-lg border border-white/10 transition cursor-pointer">Cancel</button>
+      <div class="player-up-next-title">${escapeHtml(nextCtx.title || 'Next Episode')}</div>
+      <div class="player-up-next-meta">Auto-play in <span id="autoNextCountdown">${AUTO_NEXT_SECONDS}</span>s</div>
+      <div class="player-up-next-progress" aria-hidden="true"><span></span></div>
+      <div class="player-up-next-actions">
+        <button id="autoNextPlayNow" class="player-up-next-primary" type="button">Play Now</button>
+        <button id="autoNextCancel" class="player-up-next-secondary" type="button">Cancel</button>
       </div>
     `;
-    playerSection.style.position = 'relative';
-    playerSection.appendChild(overlay);
+    host.appendChild(overlay);
 
     document.getElementById('autoNextPlayNow')?.addEventListener('click', () => {
       cancelAutoNext();
       playNextEpisode(nextCtx);
     });
-    document.getElementById('autoNextCancel')?.addEventListener('click', cancelAutoNext);
-    document.getElementById('autoNextClose')?.addEventListener('click', cancelAutoNext);
+    document.getElementById('autoNextCancel')?.addEventListener('click', () => {
+      autoNextDismissed = true;
+      cancelAutoNext();
+    });
+    document.getElementById('autoNextClose')?.addEventListener('click', () => {
+      autoNextDismissed = true;
+      cancelAutoNext();
+    });
   }
 
-  autoNextCountdownTimer = setTimeout(() => {
+  let remaining = AUTO_NEXT_SECONDS;
+  autoNextCountdownTimer = setInterval(() => {
+    remaining -= 1;
+    const countdown = document.getElementById('autoNextCountdown');
+    if (countdown) countdown.textContent = String(Math.max(0, remaining));
+    if (remaining > 0) return;
     cancelAutoNext();
-    if (!autoNextEnabled()) return;
-    playNextEpisode(nextCtx);
-  }, 7000);
+    if (autoNextEnabled()) playNextEpisode(nextCtx);
+  }, 1000);
 }
 
 async function playNextEpisode(ctx) {
-  if (!ctx) return;
+  if (!ctx || nextEpisodeLoading) return;
+  nextEpisodeLoading = true;
+  updateNextEpisodeUi();
   try {
     await loadStreams(ctx.streamId, ctx.provider, {
       title: ctx.seriesTitle,
       season: ctx.season,
       episode: ctx.episode,
+      audio: ctx.audio,
     });
     const firstPlayable = streamsList?.querySelector('[data-action="play-stream"]');
-    if (firstPlayable) firstPlayable.click();
+    if (firstPlayable) {
+      firstPlayable.click();
+    } else {
+      showError('No playable source was found for the next episode.');
+    }
   } catch (err) {
-    showError('Auto-play could not load the next episode: ' + err.message);
+    showError('Could not load the next episode: ' + err.message);
+  } finally {
+    nextEpisodeLoading = false;
+    updateNextEpisodeUi();
   }
 }
 
@@ -1150,43 +1569,25 @@ videoPlayer?.addEventListener('timeupdate', () => {
     savePlaybackProgress();
   }
 
-  if (!autoNextEnabled()) return;
-  if (autoNextEpisodeContext && !autoNextTriggered) return;
-  if (autoNextTriggered) return;
+  if (!autoNextEnabled() || autoNextTriggered) return;
 
   const dur = videoPlayer.duration;
   const pos = videoPlayer.currentTime;
   if (!Number.isFinite(dur) || dur <= 0 || !Number.isFinite(pos)) return;
 
-  if (pos / dur >= WATCHED_FRACTION && activeStreamContext.episode != null) {
-    const allEpBtns = Array.from(document.querySelectorAll('[data-action="load-streams"][data-episode]'));
-    const curEp = Number(activeStreamContext.episode);
-    const curSeason = Number(activeStreamContext.season || 1);
-    const nextBtn = allEpBtns.find(btn =>
-      Number(btn.dataset.season || 1) === curSeason &&
-      Number(btn.dataset.episode) === curEp + 1
-    ) || allEpBtns.find(btn =>
-      Number(btn.dataset.season || 1) === curSeason + 1 &&
-      Number(btn.dataset.episode) === 1
-    );
-
-    if (nextBtn) {
-      const { streamId, provider: prov, epTitle, season, episode } = nextBtn.dataset;
-      triggerAutoNextCountdown({
-        streamId,
-        provider: prov,
-        title: `${epTitle ? epTitle + ' · ' : ''}S${season}·E${episode}`,
-        seriesTitle: epTitle,
-        season: parseInt(season, 10),
-        episode: parseInt(episode, 10),
-      });
-    }
+  if (pos / dur < WATCHED_FRACTION) {
+    // Rewinding after dismissing the prompt makes it eligible again.
+    autoNextDismissed = false;
+    return;
   }
+  const nextContext = getNextEpisodeContext();
+  if (nextContext) triggerAutoNextCountdown(nextContext);
 });
 videoPlayer?.addEventListener('ended', () => {
   savePlaybackProgress(true);
-  // Keep an already-visible auto-next countdown alive so the next episode can
-  // start even if the current file ends within the countdown window.
+  if (!autoNextEnabled() || autoNextTriggered) return;
+  const nextContext = getNextEpisodeContext();
+  if (nextContext) triggerAutoNextCountdown(nextContext);
 });
 
 function removeHistoryItem(historyId, subjectId = historyId) {
@@ -2033,8 +2434,13 @@ function showDetails(movie) {
     seriesHierarchySection.classList.add('hidden');
   }
 
-  // Reset video player and streams view
+  // Reset video player and streams view. Clear the previous title's stream
+  // context after progress is saved so its episode row cannot stay highlighted
+  // and the Next Episode button cannot point at the old series.
   closeVideoPlayer();
+  activeStreamContext = { id: '', provider: movie.provider || 'addon' };
+  markSelectedEpisode(null, null);
+  updateNextEpisodeUi();
   streamsSection.classList.add('hidden');
   streamsList.innerHTML = '';
 
@@ -2082,7 +2488,7 @@ function renderSeriesHierarchy(series) {
       const audioBadge = `<span class="text-[10px] uppercase tracking-wide text-amber-400 font-mono font-bold">${escapeHtml(audioLabel)}</span>`;
 
       return `
-        <div class="flex items-center justify-between p-2.5 rounded-lg bg-[#0c0b0a] border border-[#2f2924] text-xs hover:border-slate-500 transition gap-2">
+        <div class="episode-row flex items-center justify-between p-2.5 rounded-lg bg-[#0c0b0a] border border-[#2f2924] text-xs hover:border-slate-500 transition gap-2">
           <div class="flex items-center gap-2.5 min-w-0">
             <span class="w-6 h-6 rounded-full bg-indigo-500/20 text-indigo-300 font-mono text-[11px] flex items-center justify-center font-bold shrink-0">
               ${epNum}
@@ -2102,6 +2508,8 @@ function renderSeriesHierarchy(series) {
             data-ep-title="${escapeHtml(series.title)}"
             data-season="${escapeHtml(String(getSeasonNumberFromValue(s) ?? s.seasonNumber ?? 1))}"
             data-episode="${epNum}"
+            data-audio="${escapeHtml(audioLabel)}"
+            aria-pressed="false"
             class="text-[11px] font-mono px-2.5 py-1.5 rounded-lg bg-[#211d19] hover:bg-amber-600 text-slate-200 hover:text-white transition shrink-0 font-bold"
           >
             Find Play / Download
@@ -2142,6 +2550,14 @@ function renderSeriesHierarchy(series) {
   }
 
   seriesSeasonsList.innerHTML = renderedSeasonsHtml.join('');
+
+  if (activeStreamContext?.season != null && activeStreamContext?.episode != null) {
+    markSelectedEpisode(
+      activeStreamContext.season,
+      activeStreamContext.episode,
+      activeStreamContext.audio
+    );
+  }
 }
 
 // Bind once on the stable container so rerendering the season list does not
@@ -2149,11 +2565,12 @@ function renderSeriesHierarchy(series) {
 seriesSeasonsList?.addEventListener('click', (e) => {
   const btn = e.target.closest('[data-action="load-streams"]');
   if (!btn) return;
-  const { streamId, provider: prov, epTitle, season, episode } = btn.dataset;
+  const { streamId, provider: prov, epTitle, season, episode, audio } = btn.dataset;
   loadStreams(streamId, prov, {
     title: epTitle,
     season: parseInt(season, 10),
     episode: parseInt(episode, 10),
+    audio: audio || null,
   });
 });
 
@@ -2171,7 +2588,14 @@ async function loadStreams(id, provider = 'addon', episodeContext = null) {
     provider,
     season: episodeContext?.season || null,
     episode: episodeContext?.episode || null,
+    audio: episodeContext?.audio || null,
   };
+  markSelectedEpisode(
+    activeStreamContext.season,
+    activeStreamContext.episode,
+    activeStreamContext.audio
+  );
+  updateNextEpisodeUi();
   autoSwitchResolutionTried = false;
   autoSwitchCandidates = [];
   streamsSection.classList.remove('hidden');
@@ -2224,7 +2648,9 @@ async function loadStreams(id, provider = 'addon', episodeContext = null) {
         provider: data.provider,
         season: episodeContext?.season || null,
         episode: episodeContext?.episode || null,
+        audio: episodeContext?.audio || null,
       };
+      updateNextEpisodeUi();
     }
 
     streamsLoading.classList.add('hidden');
@@ -2694,6 +3120,7 @@ function playStreamSource(rawUrl, title, cookie = '', forceProxy = false, stream
   cancelAutoSwitchResolution();
   savePlaybackProgress();
   cancelAutoNext();
+  autoNextDismissed = false;
   // Always destroy any previous hls.js instance before loading a new source.
   if (hlsStartupTimer) {
     clearTimeout(hlsStartupTimer);
@@ -3029,6 +3456,13 @@ function toggleStreamMode() {
 
 function closeVideoPlayer() {
   cancelAutoNext();
+  hideSeekFeedback();
+  activeScrub = null;
+  hideSeekTooltip();
+  if (playerControlsTimeout) {
+    clearTimeout(playerControlsTimeout);
+    playerControlsTimeout = null;
+  }
   clearSleepTimer();
   cancelAutoSwitchResolution();
   autoSwitchGeneration += 1;
@@ -3795,9 +4229,25 @@ detailsModal.addEventListener('click', (e) => {
 });
 
 viewSourcesBtn.addEventListener('click', () => {
-  if (activeMedia) {
-    loadStreams(activeMedia.subjectId, activeMedia.provider || 'addon');
+  if (!activeMedia) return;
+
+  if (isSeriesMedia(activeMedia)) {
+    const firstEpisode = getFirstEpisodeContext(activeMedia);
+    if (!firstEpisode?.streamId) {
+      showToast('No episode sources are available for this series.', 'error');
+      return;
+    }
+
+    // Selecting the row before loading gives immediate feedback and makes it
+    // clear that "View Sources" resolved the first episode, not the series ID.
+    markSelectedEpisode(firstEpisode.season, firstEpisode.episode, firstEpisode.audio);
+    const selectedRow = seriesSeasonsList?.querySelector('.episode-row.episode-selected');
+    selectedRow?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    loadStreams(firstEpisode.streamId, firstEpisode.provider, firstEpisode);
+    return;
   }
+
+  loadStreams(activeMedia.subjectId, activeMedia.provider || 'addon');
 });
 
 // Streams list event delegation: handles Play and Copy URL buttons reliably

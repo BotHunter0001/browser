@@ -433,6 +433,12 @@ a:focus-visible {
   cursor: not-allowed;
 }
 
+/* Tailwind's .hidden loads before this stylesheet, so .player-control-btn would
+   otherwise override it and keep the series-only Next button visible. */
+.player-control-btn.hidden {
+  display: none;
+}
+
 .player-control-btn svg {
   width: 1.3rem;
   height: 1.3rem;
@@ -533,6 +539,333 @@ a:focus-visible {
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   font-size: 0.7rem;
   white-space: nowrap;
+}
+
+/* Next-episode control — series only, added to the action row. */
+.player-next-btn {
+  width: auto;
+  min-width: 2.1rem;
+  gap: 0.28rem;
+  padding: 0 0.45rem;
+  border: 1px solid rgba(250, 204, 21, 0.42);
+  border-radius: 0.42rem;
+  background: rgba(250, 204, 21, 0.12);
+  color: #facc15;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.63rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.player-next-btn:hover:not(:disabled) {
+  background: #facc15;
+  color: #111;
+}
+
+.player-next-btn svg {
+  width: 1.05rem;
+  height: 1.05rem;
+  fill: currentColor;
+  stroke: none;
+}
+
+.player-next-btn:disabled {
+  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(248, 250, 252, 0.5);
+}
+
+.player-next-label {
+  line-height: 1;
+}
+
+/* Episode row selected by "View Available Streaming Sources" or playback. */
+.episode-row {
+  transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+}
+
+.episode-row.episode-selected {
+  border-color: rgba(250, 204, 21, 0.55);
+  background: rgba(250, 204, 21, 0.09);
+  box-shadow: inset 3px 0 0 #facc15;
+}
+
+.episode-row.episode-selected [data-action="load-streams"] {
+  background: #facc15;
+  color: #111;
+}
+
+/* Seek feedback HUD: shows exactly what was cut and where playback landed. */
+.player-seek-feedback {
+  position: absolute;
+  left: 50%;
+  bottom: 5.1rem;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: min(19rem, calc(100% - 1.2rem));
+  padding: 0.55rem 0.7rem;
+  border: 1px solid rgba(250, 204, 21, 0.35);
+  border-radius: 0.7rem;
+  background: rgba(10, 10, 10, 0.84);
+  box-shadow: 0 12px 35px rgba(0, 0, 0, 0.55);
+  color: #f8fafc;
+  opacity: 0;
+  transform: translate(-50%, 10px) scale(0.97);
+  transition: opacity 150ms ease, transform 150ms ease;
+  pointer-events: none;
+  backdrop-filter: blur(8px);
+}
+
+.player-seek-feedback.show {
+  opacity: 1;
+  transform: translate(-50%, 0) scale(1);
+  animation: player-seek-pop 240ms ease-out;
+}
+
+.player-seek-feedback-icon {
+  width: 1.25rem;
+  height: 1.25rem;
+  flex: 0 0 auto;
+  fill: #facc15;
+  stroke: none;
+}
+
+.player-seek-feedback.is-backward .player-seek-feedback-icon {
+  transform: scaleX(-1);
+}
+
+.player-seek-feedback-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 4.5rem;
+  line-height: 1.2;
+}
+
+.player-seek-feedback-delta {
+  color: #facc15;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.player-seek-feedback-time {
+  color: #cbd5e1;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.62rem;
+  white-space: nowrap;
+}
+
+.player-seek-feedback-track {
+  position: relative;
+  flex: 1 1 auto;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.2);
+  overflow: hidden;
+}
+
+.player-seek-feedback-range {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 999px;
+  background: rgba(250, 204, 21, 0.55);
+}
+
+.player-seek-feedback-marker {
+  position: absolute;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  margin: -4px 0 0 -4px;
+  border-radius: 50%;
+  background: #facc15;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.55);
+}
+
+.player-seek-feedback.is-forward .player-seek-feedback-marker,
+.player-seek-feedback.is-backward .player-seek-feedback-marker {
+  transition: left 120ms ease;
+}
+
+.player-seek-feedback.is-forward .player-seek-feedback-icon {
+  animation: player-seek-nudge-forward 380ms ease;
+}
+
+.player-seek-feedback.is-backward .player-seek-feedback-icon {
+  animation: player-seek-nudge-backward 380ms ease;
+}
+
+@keyframes player-seek-pop {
+  from { transform: translate(-50%, 10px) scale(0.9); }
+  to { transform: translate(-50%, 0) scale(1); }
+}
+
+@keyframes player-seek-nudge-forward {
+  0% { transform: translateX(-3px); }
+  55% { transform: translateX(4px); }
+  100% { transform: translateX(0); }
+}
+
+@keyframes player-seek-nudge-backward {
+  0% { transform: scaleX(-1) translateX(-3px); }
+  55% { transform: scaleX(-1) translateX(4px); }
+  100% { transform: scaleX(-1) translateX(0); }
+}
+
+/* Timestamp bubble that follows the pointer over the seek bar. */
+.player-seek-tooltip {
+  position: absolute;
+  z-index: 7;
+  padding: 0.2rem 0.42rem;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 0.3rem;
+  background: rgba(10, 10, 10, 0.92);
+  color: #facc15;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.62rem;
+  font-weight: 700;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateX(-50%) translateY(4px);
+  transition: opacity 120ms ease, transform 120ms ease;
+  pointer-events: none;
+}
+
+.player-seek-tooltip.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* "Up Next" card. It lives inside the video frame so it is visible in
+   fullscreen too (the old code targeted a non-existent #playerSection). */
+.player-up-next {
+  position: absolute;
+  right: 0.75rem;
+  bottom: 4.8rem;
+  z-index: 5;
+  width: min(15.5rem, calc(100% - 1.5rem));
+  padding: 0.7rem 0.75rem;
+  border: 1px solid rgba(250, 204, 21, 0.42);
+  border-radius: 0.75rem;
+  background: rgba(10, 10, 10, 0.93);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.6);
+  color: #f8fafc;
+  text-align: left;
+  backdrop-filter: blur(10px);
+  animation: player-up-next-in 220ms ease-out;
+}
+
+.player-up-next-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: #facc15;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.player-up-next-close {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #94a3b8;
+  font-family: inherit;
+  font-size: 0.72rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.player-up-next-close:hover {
+  color: #fff;
+  transform: none;
+}
+
+.player-up-next-title {
+  margin-top: 0.3rem;
+  overflow: hidden;
+  color: #fff;
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.player-up-next-meta {
+  margin-top: 0.22rem;
+  color: #cbd5e1;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.62rem;
+}
+
+.player-up-next-progress {
+  height: 3px;
+  margin-top: 0.42rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.player-up-next-progress span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: #facc15;
+  transform-origin: left center;
+  animation: player-up-next-countdown 7s linear forwards;
+}
+
+.player-up-next-actions {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.55rem;
+}
+
+.player-up-next-actions button {
+  padding: 0.36rem 0.55rem;
+  border-radius: 0.4rem;
+  font-size: 0.65rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.player-up-next-primary {
+  flex: 1;
+  border: 0;
+  background: #facc15;
+  color: #111;
+}
+
+.player-up-next-primary:hover {
+  background: #fbbf24;
+}
+
+.player-up-next-secondary {
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.08);
+  color: #cbd5e1;
+}
+
+.player-up-next-secondary:hover {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
+@keyframes player-up-next-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes player-up-next-countdown {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
 }
 
 .player-settings-menu {
@@ -956,6 +1289,22 @@ button:active {
     justify-content: flex-end;
     margin-left: auto;
     gap: 0;
+  }
+
+  .player-seek-feedback {
+    bottom: 4.7rem;
+    width: calc(100% - 0.9rem);
+    gap: 0.45rem;
+    padding: 0.45rem 0.55rem;
+  }
+
+  .player-seek-feedback-copy {
+    min-width: 4rem;
+  }
+
+  .player-next-btn {
+    padding: 0 0.35rem;
+    font-size: 0.6rem;
   }
 }
 

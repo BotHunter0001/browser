@@ -281,17 +281,18 @@ class VegaAdapter {
     };
   }
 
-  async streams(id) {
+  async streams(id, context = {}) {
     const mod = this.streamMod;
     if (!mod || typeof mod.getStream !== 'function') return [];
 
+    const requestedType = context.type === 'series' ? 'series' : 'movie';
     let rawStreams = [];
 
     // 1. If ID is already a JSON directLink or standard link
     try {
       const res = await mod.getStream({
         link: id,
-        type: 'movie',
+        type: requestedType,
         providerContext,
       });
       if (Array.isArray(res) && res.length > 0) {
@@ -320,7 +321,7 @@ class VegaAdapter {
                 try {
                   const sRes = await mod.getStream({
                     link: d.link,
-                    type: d.type || 'movie',
+                    type: d.type || requestedType,
                     providerContext,
                   });
                   if (Array.isArray(sRes)) {
@@ -338,7 +339,7 @@ class VegaAdapter {
             try {
               const sRes = await mod.getStream({
                 link: targetLink,
-                type: 'movie',
+                type: group.episodesLink ? 'series' : requestedType,
                 providerContext,
               });
               if (Array.isArray(sRes)) {

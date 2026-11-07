@@ -79,6 +79,64 @@ test('browser player exposes volume, fill mode, and complete keyboard shortcuts'
   assert.ok(css.includes('.player-fill video'));
 });
 
+test('series player has a real next-episode button and series-only resolver', () => {
+  assert.ok(html.includes('id="nextEpisodeBtn"'));
+  assert.ok(html.includes('id="nextEpisodeBtnLabel"'));
+  assert.ok(app.includes('function isSeriesMedia'));
+  assert.ok(app.includes('function getSeriesEpisodeEntries'));
+  assert.ok(app.includes('function getNextEpisodeContext'));
+  assert.ok(app.includes('function updateNextEpisodeUi'));
+  assert.ok(app.includes('data-audio='), 'episode buttons remember the active audio variant');
+  assert.ok(app.includes('nextEpisodeBtn?.addEventListener'), 'next button is wired');
+  assert.ok(app.includes("lower === 'n'"), 'N shortcut selects the next episode');
+  assert.ok(app.includes('player-up-next'), 'the up-next card uses the working overlay class');
+  assert.equal(app.includes("getElementById('playerSection')"), false, 'overlay must not target a missing element');
+  assert.ok(app.includes("videoPlayerContainer || playerContainer"), 'overlay mounts inside the video frame');
+  assert.ok(css.includes('.player-control-btn.hidden'), 'series-only button can actually be hidden');
+});
+
+test('series View Sources selects the first episode before querying sources', () => {
+  assert.ok(app.includes('function getFirstEpisodeContext'));
+  assert.ok(app.includes('function markSelectedEpisode'));
+  assert.match(app, /const firstEpisode = getFirstEpisodeContext\(activeMedia\)/);
+  assert.match(app, /loadStreams\(firstEpisode\.streamId, firstEpisode\.provider, firstEpisode\)/);
+  assert.ok(app.includes("querySelector('.episode-row.episode-selected')"));
+  assert.ok(app.includes('episode-row flex items-center'));
+  assert.ok(app.includes('aria-pressed="false"'));
+  assert.ok(css.includes('.episode-row.episode-selected'));
+  assert.ok(app.includes('markSelectedEpisode(\n    activeStreamContext.season'), 'playback highlights the active episode row');
+});
+
+test('provider bundle has a validated update path', () => {
+  const pkg = JSON.parse(read('package.json'));
+  assert.equal(pkg.scripts['providers:update'], 'node scripts/update-vega-providers.js');
+  assert.equal(pkg.scripts['providers:check'], 'node scripts/update-vega-providers.js --check');
+
+  const updater = read('scripts', 'update-vega-providers.js');
+  assert.ok(updater.includes('Zenda-Cross/vega-providers'));
+  assert.ok(updater.includes('@vega-provider'));
+  assert.ok(updater.includes('new vm.Script'), 'downloaded modules are syntax-checked');
+  assert.ok(updater.includes('.vega-backup'), 'the previous bundle is retained for rollback');
+  assert.ok(fs.existsSync(path.join(__dirname, 'vega-manifest.json')));
+  assert.ok(fs.existsSync(path.join(__dirname, 'vega-urls.json')));
+  assert.ok(fs.existsSync(path.join(__dirname, 'vega-dist')));
+});
+
+test('player seek feedback shows target time, skipped amount, and buffering hint', () => {
+  assert.ok(html.includes('id="playerSeekFeedback"'));
+  assert.ok(html.includes('id="playerSeekTooltip"'));
+  assert.ok(html.includes('id="playerSeekDelta"'));
+  assert.ok(app.includes('function seekPlayerTo'));
+  assert.ok(app.includes('function showSeekFeedback'));
+  assert.ok(app.includes('function positionSeekTooltip'));
+  assert.ok(app.includes('Seeking to ${formatPlayerTime'), 'unbuffered seeks show a buffering message');
+  assert.ok(app.includes("playerSeek?.addEventListener('pointermove'"));
+  assert.ok(app.includes('playerSeekFeedbackRange'));
+  assert.ok(css.includes('.player-seek-feedback.show'));
+  assert.ok(css.includes('.player-seek-tooltip.show'));
+  assert.ok(css.includes('.player-up-next'));
+});
+
 test('security: no inline handlers remain and CSP forbids inline scripts', () => {
   assert.equal(/on(?:error|click|load|submit|change|input)\s*=\s*"/i.test(html + app), false);
   assert.equal(/script-src[^;]*'unsafe-inline'/i.test(server), false);

@@ -27,6 +27,8 @@
 | `vega-manifest.json` | Vega provider IDs, names, categories, and enabled/disabled flags. |
 | `vegaAdapter.js` | Loads per-provider Vega modules and normalizes search, metadata, and stream results. |
 | `vegaContext.js` | Shared Axios/Cheerio/header/key-value context passed to Vega modules; seeds local base URLs. |
+| `vega-urls.json` | Snapshotted provider base URLs used by Vega modules; refresh with the provider updater when upstream sites move. |
+| `scripts/update-vega-providers.js` | Manually refreshes `vega-manifest.json`, `vega-urls.json`, and `vega-dist/` from the official Vega provider repository. |
 | `vega-dist/<provider-id>/` | Vega `posts.js`, `meta.js`, `stream.js`, optional `episodes.js`, and optional catalog/settings modules. |
 | `vega-dist/providerContext.js` | Bundled provider runtime support; treat as generated/vendor-like code and avoid unrelated edits. |
 | `lib/cache.js` | Bounded TTL cache with LRU refresh and in-flight request de-duplication. |
@@ -51,6 +53,19 @@
 - Details/source fallback is restricted to Vega-compatible link-style IDs (root-relative paths or non-Stremio URLs). Native IDs such as Stremio IDs are provider-specific and are not interchangeable.
 - `getStreams` attempts the requested provider first, then a bounded number of eligible fallbacks if the result count does not exceed `minSources`. Cross-provider title fallback only accepts a title match; it never auto-plays the first unrelated search hit.
 - Only HTTP(S) mirrors are returned to the web client. Magnet/acestream-style torrent mirrors are native-only and are filtered out rather than exposed as dead play/download buttons.
+
+## Updating Vendored Vega Providers
+
+Provider sites move frequently, and the upstream repository publishes refreshed base URLs and rebuilt modules. The vendored bundle is intentionally updated by an explicit command rather than silently at runtime:
+
+```bash
+npm run providers:check    # compare local versions and base URLs with GitHub
+npm run providers:update   # download, validate, and swap in the new bundle
+```
+
+The updater fetches `manifest.json`, `urls.json`, and the `dist/` modules from `https://github.com/Zenda-Cross/vega-providers` on the `main` branch. Set `VEGA_PROVIDERS_REF` to test a tag or branch. It validates every downloaded provider module's `@vega-provider` / `@vega-version` header, syntax-checks each JavaScript file, and only then swaps the bundle. The previous `vega-dist/`, manifest, and URL snapshot are kept in `.vega-backup/` for rollback. Restart the server after updating because Node has already cached the old modules.
+
+This command executes code published by the upstream provider repository, so treat it as a supply-chain update: review the upstream diff if you do not trust the source, and do not point the updater at an untrusted fork.
 
 ## Shared Data Contracts
 

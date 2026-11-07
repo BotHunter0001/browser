@@ -521,6 +521,20 @@
               <span class="player-loading-spinner" aria-hidden="true"></span>
               <span id="playerLoadingText">Loading stream...</span>
             </div>
+            <div id="playerSeekFeedback" class="player-seek-feedback" role="status" aria-live="polite" aria-atomic="true">
+              <svg class="player-seek-feedback-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 5v14l8-7-8-7zm9 0v14l8-7-8-7z"/>
+              </svg>
+              <div class="player-seek-feedback-copy">
+                <span id="playerSeekDelta" class="player-seek-feedback-delta">+10s</span>
+                <span id="playerSeekTarget" class="player-seek-feedback-time">0:00 / 0:00</span>
+              </div>
+              <div class="player-seek-feedback-track" aria-hidden="true">
+                <span id="playerSeekFeedbackRange" class="player-seek-feedback-range"></span>
+                <span id="playerSeekFeedbackMarker" class="player-seek-feedback-marker"></span>
+              </div>
+            </div>
+            <div id="playerSeekTooltip" class="player-seek-tooltip" aria-hidden="true">0:00</div>
             <div class="player-controls" id="playerControls">
               <input id="playerSeek" class="player-seek" type="range" min="0" max="1000" value="0" aria-label="Seek">
               <div class="player-control-row">
@@ -542,6 +556,10 @@
                   </button>
                   <button id="playerForwardBtn" class="player-control-btn player-skip-btn" type="button" aria-label="Forward 10 seconds" title="Forward 10 seconds">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 8V3m0 5h-5m5-.5a8 8 0 11-8-3.5"/></svg><span>10</span>
+                  </button>
+                  <button id="nextEpisodeBtn" class="player-control-btn player-next-btn hidden" type="button" aria-label="Next episode" aria-keyshortcuts="N" title="Next episode (N)">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5v14l9-7-9-7z"/><path d="M18 5v14"/></svg>
+                    <span id="nextEpisodeBtnLabel" class="player-next-label">Next</span>
                   </button>
                   <button id="playerCaptionsBtn" class="player-control-btn player-cc-btn" type="button" aria-label="Subtitles" title="Subtitles" disabled>CC</button>
                   <button id="playerSettingsBtn" class="player-control-btn" type="button" aria-label="Player settings" title="Settings" aria-expanded="false" aria-controls="playerSettingsMenu">
@@ -593,7 +611,7 @@
                 <span>Auto-play next episode</span>
               </label>
               <span id="subtitleStatus" aria-live="polite"></span>
-              <span class="player-shortcuts">Space/K play · J/L or ←/→ 10s · Shift+←/→ 30s · ↑/↓ volume · M mute · F fullscreen · P PiP · C captions · A fill · S settings</span>
+              <span class="player-shortcuts">Space/K play · J/L or ←/→ 10s · Shift+←/→ 30s · ↑/↓ volume · M mute · N next episode · F fullscreen · P PiP · C captions · A fill · S settings</span>
             </div>
           </div>
 
