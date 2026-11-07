@@ -357,6 +357,7 @@ a:focus-visible {
   margin: 0 0 0.55rem;
   border: 0;
   border-radius: 999px;
+  touch-action: none;
   appearance: none;
   -webkit-appearance: none;
   background: linear-gradient(to right, #facc15 0 var(--seek-progress, 0%), rgba(255, 255, 255, 0.42) var(--seek-progress, 0%) 100%);
@@ -1221,11 +1222,12 @@ button:active {
   }
 
   /* Keep Play, Mute, time, CC, Settings and Fullscreen reachable on phones.
-     Only PiP/Fit and the 10s skip buttons (seek bar covers that) are tucked
+     PiP/Fit, Next and the 10s skip buttons (seek bar covers that) are tucked
      away — previously everything but Fullscreen was hidden, which made
      settings (subtitles/audio) inaccessible on small screens. */
   .video-player-container:not(.is-fullscreen) .player-control-actions > #playerPipBtn,
   .video-player-container:not(.is-fullscreen) .player-control-actions > #playerFitBtn,
+  .video-player-container:not(.is-fullscreen) .player-control-actions > #nextEpisodeBtn,
   .video-player-container:not(.is-fullscreen) .player-control-actions > .player-skip-btn {
     display: none;
   }
@@ -1417,4 +1419,3 @@ body {
     transition: none;
   }
 }
-
