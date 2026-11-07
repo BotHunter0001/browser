@@ -829,12 +829,37 @@ nextEpisodeBtn?.addEventListener('click', () => {
 });
 
 playerSeek?.addEventListener('pointerdown', (event) => {
-  if (!videoPlayer) return;
-  activeScrub = { from: videoPlayer.currentTime };
+  if (!videoPlayer || !Number.isFinite(videoPlayer.duration) || videoPlayer.duration <= 0) return;
+  event.preventDefault();
+  playerSeek.focus({ preventScroll: true });
+  playerSeek.setPointerCapture(event.pointerId);
+  activeScrub = {
+    from: videoPlayer.currentTime,
+    startX: event.clientX,
+    pointerId: event.pointerId,
+    dragging: false,
+  };
   positionSeekTooltip(event.clientX);
 });
 
 playerSeek?.addEventListener('pointermove', (event) => {
+  if (activeScrub) {
+    if (event.pointerId !== activeScrub.pointerId) return;
+    if (!activeScrub.dragging && Math.abs(event.clientX - activeScrub.startX) < 3) {
+      positionSeekTooltip(event.clientX);
+      return;
+    }
+
+    activeScrub.dragging = true;
+    const seekRect = playerSeek.getBoundingClientRect();
+    if (!seekRect.width) return;
+    const ratio = Math.max(0, Math.min(1, (event.clientX - seekRect.left) / seekRect.width));
+    playerSeek.value = String(Math.round(ratio * 1000));
+    seekPlayerTo(ratio * videoPlayer.duration, {
+      from: activeScrub.from,
+      scrubbing: true,
+    });
+  }
   positionSeekTooltip(event.clientX);
 });
 
@@ -861,14 +886,18 @@ playerSeek?.addEventListener('change', () => {
   hideSeekTooltip(700);
 });
 
-window.addEventListener('pointerup', () => {
-  if (!activeScrub) return;
+window.addEventListener('pointerup', (event) => {
+  if (!activeScrub || event.pointerId !== activeScrub.pointerId) return;
+  const wasDragging = activeScrub.dragging;
   activeScrub = null;
+  if (wasDragging && !isTimeBuffered(videoPlayer.currentTime)) {
+    setPlayerLoading(true, `Seeking to ${formatPlayerTime(videoPlayer.currentTime)}…`);
+  }
   hideSeekTooltip(700);
 });
 
-window.addEventListener('pointercancel', () => {
-  if (!activeScrub) return;
+window.addEventListener('pointercancel', (event) => {
+  if (!activeScrub || event.pointerId !== activeScrub.pointerId) return;
   activeScrub = null;
   hideSeekTooltip(0);
 });

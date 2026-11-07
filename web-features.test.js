@@ -130,8 +130,12 @@ test('player seek feedback shows target time, skipped amount, and buffering hint
   assert.ok(app.includes('function showSeekFeedback'));
   assert.ok(app.includes('function positionSeekTooltip'));
   assert.ok(app.includes('Seeking to ${formatPlayerTime'), 'unbuffered seeks show a buffering message');
+  assert.ok(app.includes("event.preventDefault();\n  playerSeek.focus({ preventScroll: true });"));
+  assert.ok(app.includes('Math.abs(event.clientX - activeScrub.startX) < 3'));
+  assert.ok(app.includes('activeScrub.dragging = true;'));
   assert.ok(app.includes("playerSeek?.addEventListener('pointermove'"));
   assert.ok(app.includes('playerSeekFeedbackRange'));
+  assert.ok(css.includes('touch-action: none;'));
   assert.ok(css.includes('.player-seek-feedback.show'));
   assert.ok(css.includes('.player-seek-tooltip.show'));
   assert.ok(css.includes('.player-up-next'));
