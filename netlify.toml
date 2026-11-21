@@ -1,0 +1,21 @@
+[build]
+  # Rebuilds public/tailwind.css with the Tailwind CLI (npm, package-lock.json).
+  command = "npm run build"
+  # Static assets (HTML, JS, CSS, vendor scripts) served from the CDN.
+  # The Express app in server.js runs as a Netlify Server (netlify/server/index.mjs)
+  # and handles /api/* and every other path that is not a static file.
+  publish = "public"
+
+[build.environment]
+  # Netlify Server requires Node.js 24 or later.
+  NODE_VERSION = "24"
+
+[server]
+  # Files server.js loads at runtime through dynamic require() and fs reads,
+  # which the bundler cannot trace on its own.
+  includedFiles = [
+    "public/**",
+    "vega-dist/**",
+    "vega-manifest.json",
+    "vega-urls.json",
+  ]
